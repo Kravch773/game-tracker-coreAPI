@@ -287,7 +287,7 @@ export function normalizeUserRating(value: number): number | null {
   if (!Number.isFinite(value)) return null;
   const rounded = Math.round(value * 10) / 10;
   if (rounded === 11) return 11;
-  if (rounded < 1 || rounded > 10) return null;
+  if (rounded < 0 || rounded > 10) return null;
   return rounded;
 }
 
