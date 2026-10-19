@@ -27,47 +27,47 @@ export async function syncSteamLibrary(userId: string, profile: string): Promise
   }
 
   const matched = await matchCatalog([...minutesByApp.keys()]);
-  const plays = matched.map((game) => ({
-    gameId: game.gameId,
-    minutes: minutesByApp.get(game.appId) ?? 0,
-  }));
+  const minutesByGame = new Map<string, number>();
+  for (const game of matched) {
+    const minutes = minutesByApp.get(game.appId) ?? 0;
+    minutesByGame.set(game.gameId, Math.max(minutesByGame.get(game.gameId) ?? 0, minutes));
+  }
 
-  let added = 0;
+  let kept = 0;
   try {
-    added = await db.transaction(async (tx) => {
+    kept = await db.transaction(async (tx) => {
       await tx.update(users).set({ steamId }).where(eq(users.id, userId));
-      await tx.delete(steamPlays).where(eq(steamPlays.userId, userId));
-      for (const chunk of chunks(plays, 200)) {
-        await tx.insert(steamPlays).values(
-          chunk.map((play) => ({
-            userId,
-            gameId: play.gameId,
-            playtimeMinutes: play.minutes,
-          })),
-        );
-      }
+      await tx.execute(sql`
+        delete from list_entries
+        using steam_plays
+        where list_entries.user_id = steam_plays.user_id
+          and list_entries.game_id = steam_plays.game_id
+          and list_entries.user_id = ${userId}
+          and list_entries.status = 'backlog'
+          and list_entries.rating is null
+          and (list_entries.review is null or btrim(list_entries.review) = '')
+          and abs(extract(epoch from (list_entries.created_at - steam_plays.synced_at))) < 600
+      `);
 
-      const gameIds = plays.map((play) => play.gameId);
-      const existing = new Set<string>();
-      for (const chunk of chunks(gameIds, 200)) {
+      const listed = new Set<string>();
+      for (const chunk of chunks([...minutesByGame.keys()], 200)) {
         const rows = await tx
           .select({ gameId: listEntries.gameId })
           .from(listEntries)
           .where(and(eq(listEntries.userId, userId), inArray(listEntries.gameId, chunk)));
-        for (const row of rows) existing.add(row.gameId);
+        for (const row of rows) listed.add(row.gameId);
       }
-      const missing = gameIds.filter((gameId) => !existing.has(gameId));
-      for (const chunk of chunks(missing, 200)) {
-        await tx.insert(listEntries).values(
-          chunk.map((gameId) => ({
-            userId,
-            gameId,
-            status: "backlog",
-            updatedAt: new Date(),
-          })),
-        );
+
+      await tx.delete(steamPlays).where(eq(steamPlays.userId, userId));
+      const plays = [...listed].map((gameId) => ({
+        userId,
+        gameId,
+        playtimeMinutes: minutesByGame.get(gameId) ?? 0,
+      }));
+      for (const chunk of chunks(plays, 200)) {
+        await tx.insert(steamPlays).values(chunk);
       }
-      return missing.length;
+      return plays.length;
     });
   } catch (error) {
     if (pgCode(error) === "23505") throw new SteamError(t("profile.steamTaken"), 409);
@@ -76,9 +76,9 @@ export async function syncSteamLibrary(userId: string, profile: string): Promise
 
   return {
     steamId,
-    matched: plays.length,
-    added,
-    unmatched: minutesByApp.size - plays.length,
+    matched: kept,
+    added: 0,
+    unmatched: minutesByApp.size - matched.length,
   };
 }
 
