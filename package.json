@@ -1,0 +1,17 @@
+{
+  "name": "gametracker",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -n api,web -c blue,magenta \"npm run dev -w @gametracker/api\" \"npm run dev -w @gametracker/web\"",
+    "dev:api": "npm run dev -w @gametracker/api",
+    "dev:web": "npm run dev -w @gametracker/web",
+    "db:up": "docker compose up -d"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}

@@ -1,0 +1,313 @@
+import {
+  LIBRARY_STATUSES,
+  REVIEW_MAX_LENGTH,
+  t,
+  type GameEntry,
+  type LibraryGame,
+  type LibraryStatus,
+  type UserLibrary,
+} from "@gametracker/shared";
+import { and, desc, eq, sql } from "drizzle-orm";
+import { db } from "../db/client.js";
+import { favorites, follows, games, listEntries, users } from "../db/schema.js";
+
+export class LibraryInputError extends Error {}
+
+const SCORED = new Set<LibraryStatus>(["finished", "dropped"]);
+
+export async function libraryForUsername(username: string, viewerId: string | null): Promise<UserLibrary | null> {
+  const found = await db
+    .select({ id: users.id, username: users.username })
+    .from(users)
+    .where(sql`lower(${users.username}) = ${username.toLowerCase()}`)
+    .limit(1);
+  const user = found[0];
+  if (!user) return null;
+
+  const entries = await db
+    .select({
+      status: listEntries.status,
+      rating: listEntries.rating,
+      review: listEntries.review,
+      addedAt: listEntries.createdAt,
+      startedAt: listEntries.startedAt,
+      finishedAt: listEntries.finishedAt,
+      id: games.id,
+      slug: games.slug,
+      title: games.title,
+      coverUrl: games.coverUrl,
+      releaseDate: games.releaseDate,
+      platforms: games.platforms,
+      metacriticScore: games.metacriticScore,
+    })
+    .from(listEntries)
+    .innerJoin(games, eq(games.id, listEntries.gameId))
+    .where(eq(listEntries.userId, user.id))
+    .orderBy(desc(listEntries.updatedAt));
+
+  const favoriteRows = await db
+    .select({
+      rating: listEntries.rating,
+      review: listEntries.review,
+      addedAt: favorites.createdAt,
+      startedAt: listEntries.startedAt,
+      finishedAt: listEntries.finishedAt,
+      id: games.id,
+      slug: games.slug,
+      title: games.title,
+      coverUrl: games.coverUrl,
+      releaseDate: games.releaseDate,
+      platforms: games.platforms,
+      metacriticScore: games.metacriticScore,
+    })
+    .from(favorites)
+    .innerJoin(games, eq(games.id, favorites.gameId))
+    .leftJoin(
+      listEntries,
+      and(eq(listEntries.userId, favorites.userId), eq(listEntries.gameId, favorites.gameId)),
+    )
+    .where(eq(favorites.userId, user.id))
+    .orderBy(desc(favorites.createdAt));
+
+  const library: UserLibrary = {
+    user: { username: user.username },
+    playing: [],
+    finished: [],
+    dropped: [],
+    backlog: [],
+    favorites: favoriteRows.map(toLibraryGame),
+    followers: await countOf(eq(follows.followingId, user.id)),
+    following: await countOf(eq(follows.followerId, user.id)),
+    followedByMe: viewerId ? await followsUser(viewerId, user.id) : false,
+  };
+
+  for (const entry of entries) {
+    if (!isLibraryStatus(entry.status)) continue;
+    library[entry.status].push(toLibraryGame(entry));
+  }
+
+  return library;
+}
+
+export async function entryForSlug(userId: string, slug: string): Promise<GameEntry | null> {
+  const game = await gameBySlug(slug);
+  if (!game) return null;
+
+  const entryRows = await db
+    .select()
+    .from(listEntries)
+    .where(and(eq(listEntries.userId, userId), eq(listEntries.gameId, game.id)))
+    .limit(1);
+  const favoriteRows = await db
+    .select({ gameId: favorites.gameId })
+    .from(favorites)
+    .where(and(eq(favorites.userId, userId), eq(favorites.gameId, game.id)))
+    .limit(1);
+  const entry = entryRows[0];
+
+  return {
+    status: entry && isLibraryStatus(entry.status) ? entry.status : null,
+    rating: entry?.rating ?? null,
+    review: entry?.review ?? null,
+    favorite: favoriteRows.length > 0,
+  };
+}
+
+export async function saveEntry(
+  userId: string,
+  slug: string,
+  input: { status: LibraryStatus; rating: number | null; review: string | null },
+): Promise<GameEntry> {
+  const game = await gameBySlug(slug);
+  if (!game) throw new MissingGameError();
+
+  const scored = SCORED.has(input.status);
+  const rating = scored && input.rating != null ? normalizeUserRating(input.rating) : null;
+  const review = scored ? normalizeReview(input.review) : null;
+  if (scored && input.rating != null && rating == null) {
+    throw new LibraryInputError(t("library.ratingInvalid"));
+  }
+
+  const now = new Date();
+  const currentRows = await db
+    .select({
+      status: listEntries.status,
+      startedAt: listEntries.startedAt,
+      finishedAt: listEntries.finishedAt,
+    })
+    .from(listEntries)
+    .where(and(eq(listEntries.userId, userId), eq(listEntries.gameId, game.id)))
+    .limit(1);
+  const current = currentRows[0];
+  const startedAt =
+    input.status === "playing"
+      ? current?.status === "playing" && current.startedAt
+        ? current.startedAt
+        : now
+      : (current?.startedAt ?? null);
+  const finishedAt =
+    input.status === "finished"
+      ? current?.status === "finished" && current.finishedAt
+        ? current.finishedAt
+        : now
+      : (current?.finishedAt ?? null);
+  await db
+    .insert(listEntries)
+    .values({
+      userId,
+      gameId: game.id,
+      status: input.status,
+      rating,
+      review,
+      startedAt,
+      finishedAt,
+      updatedAt: now,
+    })
+    .onConflictDoUpdate({
+      target: [listEntries.userId, listEntries.gameId],
+      set: { status: input.status, rating, review, startedAt, finishedAt, updatedAt: now },
+    });
+
+  return {
+    status: input.status,
+    rating,
+    review,
+    favorite: await isFavorite(userId, game.id),
+  };
+}
+
+export async function removeEntry(userId: string, slug: string): Promise<void> {
+  const game = await gameBySlug(slug);
+  if (!game) throw new MissingGameError();
+  await db
+    .delete(listEntries)
+    .where(and(eq(listEntries.userId, userId), eq(listEntries.gameId, game.id)));
+}
+
+export async function setFavorite(userId: string, slug: string, favorite: boolean): Promise<void> {
+  const game = await gameBySlug(slug);
+  if (!game) throw new MissingGameError();
+
+  if (!favorite) {
+    await db
+      .delete(favorites)
+      .where(and(eq(favorites.userId, userId), eq(favorites.gameId, game.id)));
+    return;
+  }
+
+  await db.insert(favorites).values({ userId, gameId: game.id }).onConflictDoNothing();
+}
+
+export class MissingGameError extends Error {
+  constructor() {
+    super("Game not found");
+  }
+}
+
+export function parseEntryBody(body: unknown): {
+  status: LibraryStatus;
+  rating: number | null;
+  review: string | null;
+} {
+  const record = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
+  if (!isLibraryStatus(record.status)) {
+    throw new LibraryInputError(t("library.chooseSection"));
+  }
+
+  let rating: number | null = null;
+  if (record.rating != null) {
+    if (typeof record.rating !== "number" || !Number.isFinite(record.rating)) {
+      throw new LibraryInputError(t("library.ratingInvalid"));
+    }
+    rating = normalizeUserRating(record.rating);
+    if (rating == null) throw new LibraryInputError(t("library.ratingInvalid"));
+  }
+
+  const review = typeof record.review === "string" ? record.review : null;
+  return { status: record.status, rating, review };
+}
+
+function normalizeReview(review: string | null): string | null {
+  if (!review) return null;
+  const trimmed = review.trim();
+  if (!trimmed) return null;
+  if ([...trimmed].length > REVIEW_MAX_LENGTH) {
+    throw new LibraryInputError(t("library.reviewTooLong"));
+  }
+  return trimmed;
+}
+
+function toLibraryGame(row: {
+  rating: number | null;
+  review: string | null;
+  addedAt: Date;
+  startedAt: Date | null;
+  finishedAt: Date | null;
+  id: string;
+  slug: string;
+  title: string;
+  coverUrl: string | null;
+  releaseDate: string | null;
+  platforms: unknown;
+  metacriticScore: number | null;
+}): LibraryGame {
+  return {
+    id: row.id,
+    slug: row.slug,
+    title: row.title,
+    coverUrl: row.coverUrl,
+    releaseDate: row.releaseDate,
+    platforms: Array.isArray(row.platforms)
+      ? row.platforms.filter((item): item is string => typeof item === "string")
+      : [],
+    rating: row.rating == null ? null : Number(row.rating),
+    review: row.review,
+    addedAt: row.addedAt.toISOString(),
+    startedAt: row.startedAt ? row.startedAt.toISOString() : null,
+    finishedAt: row.finishedAt ? row.finishedAt.toISOString() : null,
+    metacriticScore: row.metacriticScore,
+  };
+}
+
+async function countOf(where: ReturnType<typeof eq>): Promise<number> {
+  const rows = await db
+    .select({ count: sql<number>`cast(count(*) as int)` })
+    .from(follows)
+    .where(where);
+  return Number(rows[0]?.count ?? 0);
+}
+
+async function followsUser(followerId: string, followingId: string): Promise<boolean> {
+  const rows = await db
+    .select({ followerId: follows.followerId })
+    .from(follows)
+    .where(and(eq(follows.followerId, followerId), eq(follows.followingId, followingId)))
+    .limit(1);
+  return rows.length > 0;
+}
+
+export function normalizeUserRating(value: number): number | null {
+  if (!Number.isFinite(value)) return null;
+  const rounded = Math.round(value * 10) / 10;
+  if (rounded === 11) return 11;
+  if (rounded < 1 || rounded > 10) return null;
+  return rounded;
+}
+
+function isLibraryStatus(value: unknown): value is LibraryStatus {
+  return typeof value === "string" && (LIBRARY_STATUSES as readonly string[]).includes(value);
+}
+
+async function gameBySlug(slug: string) {
+  const rows = await db.select({ id: games.id }).from(games).where(eq(games.slug, slug)).limit(1);
+  return rows[0] ?? null;
+}
+
+async function isFavorite(userId: string, gameId: string): Promise<boolean> {
+  const rows = await db
+    .select({ gameId: favorites.gameId })
+    .from(favorites)
+    .where(and(eq(favorites.userId, userId), eq(favorites.gameId, gameId)))
+    .limit(1);
+  return rows.length > 0;
+}

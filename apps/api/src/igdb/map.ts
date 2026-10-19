@@ -1,0 +1,222 @@
+import type { GameLinkKind, GameLinkSource } from "@gametracker/shared";
+import type { StoredScreenshot, StoredTimeToBeat, StoredVideo } from "../db/schema.js";
+import type { IgdbGameDetail, IgdbTimeToBeat } from "./client.js";
+
+const WEBSITE_KIND: Record<number, GameLinkKind> = {
+  1: "official",
+  3: "wikipedia",
+  13: "steam",
+  16: "epic",
+  17: "gog",
+};
+
+export type MappedLink = {
+  kind: GameLinkKind;
+  url: string;
+  externalId: string | null;
+  source: GameLinkSource;
+};
+
+export type MappedGame = {
+  igdbId: number;
+  slug: string;
+  title: string;
+  summary: string | null;
+  coverUrl: string | null;
+  releaseDate: string | null;
+  platforms: string[];
+  links: MappedLink[];
+};
+
+type IgdbWebsite = {
+  url?: string;
+  category?: number;
+  type?: number;
+};
+
+export type IgdbGame = {
+  id?: number;
+  name?: string;
+  slug?: string;
+  summary?: string;
+  first_release_date?: number;
+  cover?: { image_id?: string };
+  platforms?: { name?: string }[];
+  websites?: IgdbWebsite[];
+  hypes?: number;
+  release_dates?: {
+    date?: number;
+    date_format?: number;
+    platform?: { name?: string; abbreviation?: string };
+  }[];
+};
+
+export function mapIgdbGame(game: IgdbGame): MappedGame | null {
+  if (!game.id || !game.name?.trim()) return null;
+
+  const slug = (game.slug?.trim() || `game-${game.id}`).toLowerCase();
+  const platforms = [
+    ...new Set(
+      (game.platforms ?? [])
+        .map((platform) => platform.name?.trim())
+        .filter((name): name is string => Boolean(name)),
+    ),
+  ];
+
+  return {
+    igdbId: game.id,
+    slug,
+    title: game.name.trim(),
+    summary: game.summary?.trim() || null,
+    coverUrl: coverUrl(game.cover?.image_id),
+    releaseDate: releaseDate(game.first_release_date),
+    platforms,
+    links: mapLinks(game.websites),
+  };
+}
+
+function coverUrl(imageId: string | undefined): string | null {
+  if (!imageId) return null;
+  return `https://images.igdb.com/igdb/image/upload/t_cover_big/${imageId}.jpg`;
+}
+
+function releaseDate(unixSeconds: number | undefined): string | null {
+  if (!unixSeconds) return null;
+  return new Date(unixSeconds * 1000).toISOString().slice(0, 10);
+}
+
+function mapLinks(websites: IgdbWebsite[] | undefined): MappedLink[] {
+  const links: MappedLink[] = [];
+  const seen = new Set<GameLinkKind>();
+
+  for (const website of websites ?? []) {
+    const websiteType = website.type ?? website.category;
+    const kind = typeof websiteType === "number" ? WEBSITE_KIND[websiteType] : undefined;
+    const url = website.url?.trim();
+    if (!kind || !url || seen.has(kind)) continue;
+    seen.add(kind);
+    links.push({
+      kind,
+      url,
+      externalId: kind === "steam" ? steamAppId(url) : null,
+      source: "igdb",
+    });
+  }
+
+  return links;
+}
+
+export type MappedDetails = {
+  storyline: string | null;
+  igdbRating: number | null;
+  genres: string[];
+  screenshots: StoredScreenshot[];
+  videos: StoredVideo[];
+  developers: string[];
+  publishers: string[];
+  themes: string[];
+  ageRatings: string[];
+  timeToBeat: StoredTimeToBeat | null;
+  similarIgdbIds: number[];
+  detailVersion: number;
+};
+
+const AGE_ORG: Record<number, string> = {
+  1: "ESRB",
+  2: "PEGI",
+};
+
+export function mapIgdbDetails(game: IgdbGameDetail | null, beat: IgdbTimeToBeat | null): MappedDetails {
+  const screenshots = (game?.screenshots ?? [])
+    .map((shot) => shot.image_id?.trim())
+    .filter((imageId): imageId is string => Boolean(imageId))
+    .slice(0, 12)
+    .map((imageId) => ({
+      url: `https://images.igdb.com/igdb/image/upload/t_screenshot_med/${imageId}.jpg`,
+    }));
+
+  const videos = (game?.videos ?? [])
+    .flatMap((video) => {
+      const videoId = video.video_id?.trim();
+      if (!videoId) return [];
+      return [
+        {
+          name: video.name?.trim() || null,
+          url: `https://www.youtube.com/watch?v=${videoId}`,
+        },
+      ];
+    })
+    .slice(0, 6);
+
+  const rating = typeof game?.rating === "number" ? Math.round(game.rating * 10) / 10 : null;
+
+  return {
+    storyline: game?.storyline?.trim() || null,
+    igdbRating: rating,
+    genres: [
+      ...new Set(
+        (game?.genres ?? [])
+          .map((genre) => genre.name?.trim())
+          .filter((name): name is string => Boolean(name)),
+      ),
+    ],
+    screenshots,
+    videos,
+    developers: companyNames(game, "developer"),
+    publishers: companyNames(game, "publisher"),
+    themes: uniqueNames(game?.themes),
+    ageRatings: ageLabels(game),
+    timeToBeat: mapBeat(beat),
+    similarIgdbIds: (game?.similar_games ?? []).filter((id) => Number.isInteger(id)).slice(0, 8),
+    detailVersion: 2,
+  };
+}
+
+function companyNames(game: IgdbGameDetail | null, role: "developer" | "publisher"): string[] {
+  return [
+    ...new Set(
+      (game?.involved_companies ?? [])
+        .filter((company) => company[role])
+        .map((company) => company.company?.name?.trim())
+        .filter((name): name is string => Boolean(name)),
+    ),
+  ];
+}
+
+function uniqueNames(items: { name?: string }[] | undefined): string[] {
+  return [
+    ...new Set(
+      (items ?? []).map((item) => item.name?.trim()).filter((name): name is string => Boolean(name)),
+    ),
+  ];
+}
+
+function ageLabels(game: IgdbGameDetail | null): string[] {
+  const labels: string[] = [];
+  for (const rating of game?.age_ratings ?? []) {
+    const org = typeof rating.organization === "number" ? AGE_ORG[rating.organization] : undefined;
+    const value = rating.rating_category?.rating?.trim();
+    if (!org || !value || labels.includes(`${org} ${value}`)) continue;
+    labels.push(`${org} ${value}`);
+  }
+  return labels;
+}
+
+function mapBeat(beat: IgdbTimeToBeat | null): StoredTimeToBeat | null {
+  if (!beat) return null;
+  const hastily = hours(beat.hastily);
+  const normally = hours(beat.normally);
+  const completely = hours(beat.completely);
+  if (hastily == null && normally == null && completely == null) return null;
+  return { hastily, normally, completely };
+}
+
+function hours(seconds: number | undefined): number | null {
+  if (typeof seconds !== "number" || seconds <= 0) return null;
+  return Math.round((seconds / 3600) * 10) / 10;
+}
+
+function steamAppId(url: string): string | null {
+  const match = url.match(/\/app\/(\d+)/);
+  return match?.[1] ?? null;
+}
