@@ -276,7 +276,7 @@ export const uk = {
     registerFailed: "Не вдалося зареєструватися",
     loginFailed: "Не вдалося увійти",
     emailInvalid: "Пошта виглядає неправильно",
-    usernameInvalid: "Ім’я: від 3 до 24 символів, літери, цифри та _",
+    usernameInvalid: "Ім’я: від 3 до 24 символів, латинські літери, цифри та _",
     passwordTooShort: "Пароль: щонайменше 8 символів",
     badCredentials: "Невірний логін або пароль",
     emailTaken: "Така пошта вже зареєстрована",

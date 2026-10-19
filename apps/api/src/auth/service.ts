@@ -7,7 +7,7 @@ import { hashPassword, verifyPassword } from "./password.js";
 import { readCookie, readSession } from "./session.js";
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const USERNAME_PATTERN = /^[\p{L}\p{N}_]+$/u;
+const USERNAME_PATTERN = /^[A-Za-z0-9_]+$/;
 
 export class AuthInputError extends Error {
   constructor(
@@ -137,7 +137,7 @@ export async function userFromRequest(request: FastifyRequest): Promise<AuthUser
 }
 
 function assertUsername(username: string): void {
-  if (username.length < 3 || username.length > 24 || !USERNAME_PATTERN.test(username) || !/[\p{L}\p{N}]/u.test(username)) {
+  if (username.length < 3 || username.length > 24 || !USERNAME_PATTERN.test(username) || !/[A-Za-z0-9]/.test(username)) {
     throw new AuthInputError(t("auth.usernameInvalid"));
   }
 }

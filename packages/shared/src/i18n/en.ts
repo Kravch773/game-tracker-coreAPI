@@ -278,7 +278,7 @@ export const en = {
     registerFailed: "Could not sign up",
     loginFailed: "Could not log in",
     emailInvalid: "That email looks wrong",
-    usernameInvalid: "Name: 3 to 24 characters, letters, digits, and _",
+    usernameInvalid: "Name: 3 to 24 characters, Latin letters, digits, and _",
     passwordTooShort: "Password must be at least 8 characters",
     badCredentials: "Wrong login or password",
     emailTaken: "That email is already registered",
