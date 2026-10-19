@@ -15,7 +15,8 @@ import { mapIgdbDetails, mapIgdbGame, type MappedGame } from "../igdb/map.js";
 import { scheduleMetacriticEnrich } from "../rawg/enrich.js";
 import { toDetails, toSummary } from "./present.js";
 
-const FEW_MATCHES = 5;
+const PAGE_SIZE = 20;
+const SEARCH_POOL = 60;
 const CACHE_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 const FRESH_MS = 7 * 24 * 60 * 60 * 1000;
 const DETAILS_TTL_MS = 14 * 24 * 60 * 60 * 1000;
@@ -24,30 +25,40 @@ const detailRequests = new Map<string, Promise<GameDetailRow | null>>();
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
-export async function searchGames(rawQuery: string, filters: SearchFilters = {}): Promise<GameSummary[]> {
+export async function searchGames(
+  rawQuery: string,
+  filters: SearchFilters = {},
+  offset = 0,
+): Promise<{ games: GameSummary[]; hasMore: boolean }> {
   const query = rawQuery.replace(/\s+/g, " ").trim();
   const key = cacheKey(query, filters);
   const filtered = hasFilters(filters);
-  if (query.length < 2 && !filtered) return [];
+  const start = offset > 0 ? offset : 0;
+  if (query.length < 2 && !filtered) return { games: [], hasMore: false };
 
   const cachedIds = await readFreshCache(key);
-  if (cachedIds) return loadSummaries(cachedIds);
+  if (cachedIds) return pageOf(cachedIds, start);
 
   const needle = query.toLowerCase();
   const local = needle.length >= 2 ? await searchLocal(needle) : [];
-  const titled = local.filter((game) => game.title.toLowerCase().includes(needle));
-  if (!filtered && (titled.length >= FEW_MATCHES || !igdbConfigured())) {
-    return local.map(toSummary);
-  }
+  const titled = local.filter((game) => game.title.toLowerCase().includes(needle) && matchesLocal(game, filters));
+  if (!igdbConfigured()) return pageOf(sortedLocalIds(titled), start);
 
   try {
-    const remote = filtered ? await queryIgdbGames(filteredQuery(query, filters)) : await searchIgdb(query);
-    const ids = await upsertIgdbGames(remote);
-    await writeCache(key, ids);
-    return loadSummaries(ids);
+    const remote = filtered ? await queryIgdbGames(filteredQuery(query, filters, SEARCH_POOL)) : await searchIgdb(query, SEARCH_POOL);
+    const named = needle.length >= 2 ? remote.filter((game) => (game.name ?? "").toLowerCase().includes(needle)) : remote;
+    const ids = await upsertIgdbGames(rankRemote(named));
+    const seen = new Set(ids);
+    const extra = titled
+      .filter((game) => !seen.has(game.id))
+      .sort(byReleaseDesc)
+      .map((game) => game.id);
+    const result = [...ids, ...extra];
+    await writeCache(key, result);
+    return pageOf(result, start);
   } catch (error) {
     console.error("IGDB search failed", error);
-    return local.filter((game) => matchesLocal(game, filters)).map(toSummary);
+    return pageOf(sortedLocalIds(titled), start);
   }
 }
 
@@ -135,8 +146,40 @@ async function searchLocal(key: string) {
     .where(
       sql`similarity(lower(${games.title}), ${key}) > 0.25 OR ${games.title} ILIKE ${pattern} ESCAPE '\\'`,
     )
-    .orderBy(sql`similarity(lower(${games.title}), ${key}) DESC`)
-    .limit(20);
+    .orderBy(
+      sql`CASE WHEN lower(${games.title}) LIKE ${pattern} ESCAPE '\\' THEN 0 ELSE 1 END`,
+      sql`similarity(lower(${games.title}), ${key}) DESC`,
+    )
+    .limit(SEARCH_POOL);
+}
+
+async function pageOf(ids: string[], start: number): Promise<{ games: GameSummary[]; hasMore: boolean }> {
+  return {
+    games: await loadSummaries(ids.slice(start, start + PAGE_SIZE)),
+    hasMore: start + PAGE_SIZE < ids.length,
+  };
+}
+
+function sortedLocalIds(rows: GameRow[]): string[] {
+  return [...rows].sort(byReleaseDesc).map((game) => game.id);
+}
+
+function byReleaseDesc(a: { releaseDate: string | null }, b: { releaseDate: string | null }): number {
+  return (b.releaseDate ?? "").localeCompare(a.releaseDate ?? "");
+}
+
+function rankRemote(remote: Parameters<typeof mapIgdbGame>[0][]): Parameters<typeof mapIgdbGame>[0][] {
+  return [...remote].sort((a, b) => {
+    const popularity = popularityOf(b) - popularityOf(a);
+    if (popularity !== 0) return popularity;
+    return (b.first_release_date ?? 0) - (a.first_release_date ?? 0);
+  });
+}
+
+function popularityOf(game: { total_rating_count?: number; hypes?: number }): number {
+  const ratings = typeof game.total_rating_count === "number" ? game.total_rating_count : 0;
+  const hypes = typeof game.hypes === "number" ? game.hypes : 0;
+  return ratings + hypes;
 }
 
 async function loadSummaries(ids: string[]): Promise<GameSummary[]> {
@@ -256,7 +299,7 @@ async function resolveSlug(
 }
 
 const CARD_FIELDS =
-  "fields name,slug,summary,first_release_date,cover.image_id,platforms.name,websites.url,websites.type;";
+  "fields name,slug,summary,first_release_date,cover.image_id,platforms.name,websites.url,websites.type,total_rating_count,hypes;";
 
 async function similarGames(igdbIds: number[]): Promise<GameSummary[]> {
   const ids = igdbIds.filter((id) => Number.isInteger(id)).slice(0, 8);
@@ -290,15 +333,15 @@ async function missingIgdbIds(ids: number[]): Promise<number[]> {
 
 function cacheKey(query: string, filters: SearchFilters): string {
   const base = query.toLowerCase();
-  if (!hasFilters(filters)) return `d2:${base}`;
-  return `f4:${base}|${filters.genre ?? ""}|${filters.platform ?? ""}|${filters.year ?? ""}`;
+  if (!hasFilters(filters)) return `d5:${base}`;
+  return `f6:${base}|${filters.genre ?? ""}|${filters.platform ?? ""}|${filters.year ?? ""}`;
 }
 
 function hasFilters(filters: SearchFilters): boolean {
   return Boolean(filters.genre || filters.platform || filters.year);
 }
 
-function filteredQuery(query: string, filters: SearchFilters): string {
+function filteredQuery(query: string, filters: SearchFilters, limit = SEARCH_POOL): string {
   const where = ["game_type = (0,1,2,3,4,8,9,10)", "version_parent = null", "cover != null"];
   const genre = filters.genre ? catalogGenre(filters.genre) : null;
   const platform = filters.platform ? catalogPlatform(filters.platform) : null;
@@ -310,13 +353,10 @@ function filteredQuery(query: string, filters: SearchFilters): string {
     where.push(`first_release_date >= ${start} & first_release_date < ${end}`);
   }
   const lines = [CARD_FIELDS];
-  if (query.length >= 2) {
-    lines.unshift(`search "${query.replace(/["\\\n\r]/g, "").slice(0, 80)}";`);
-  } else {
-    where.push("total_rating_count > 40");
-    lines.push("sort total_rating desc;");
-  }
-  lines.push(`where ${where.join(" & ")};`, "limit 24;");
+  const term = query.replace(/["\\*\n\r]/g, "").trim().slice(0, 80);
+  if (term.length >= 2) where.push(`name ~ *"${term}"*`);
+  else where.push("total_rating_count > 40");
+  lines.push(`where ${where.join(" & ")};`, "sort total_rating_count desc;", `limit ${limit};`);
   return lines.join("\n");
 }
 

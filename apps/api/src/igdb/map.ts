@@ -44,6 +44,7 @@ export type IgdbGame = {
   platforms?: { name?: string }[];
   websites?: IgdbWebsite[];
   hypes?: number;
+  total_rating_count?: number;
   release_dates?: {
     date?: number;
     date_format?: number;

@@ -12,18 +12,23 @@ const REQUEST_GAP_MS = 280;
 
 const SEARCH_TYPES = "0,1,2,3,4,8,9,10";
 
-export async function searchIgdb(query: string): Promise<IgdbGame[]> {
-  const term = query.replace(/["\\\n\r]/g, "").trim().slice(0, 80);
+const SEARCH_FIELDS =
+  "fields name,slug,summary,first_release_date,cover.image_id,platforms.name,websites.url,websites.type,total_rating_count,hypes;";
+
+export async function searchIgdb(query: string, limit = 20): Promise<IgdbGame[]> {
+  const term = query.replace(/["\\*\n\r]/g, "").trim().slice(0, 80);
   if (!term) return [];
-
-  const body = [
-    `search "${term}";`,
-    "fields name,slug,summary,first_release_date,cover.image_id,platforms.name,websites.url,websites.type;",
-    `where game_type = (${SEARCH_TYPES}) & version_parent = null;`,
-    "limit 20;",
-  ].join("\n");
-
-  return gamesFrom(await postGames(body, "IGDB search"));
+  const size = Math.min(80, Math.max(1, Math.floor(limit)));
+  const where = `name ~ *"${term}"* & game_type = (${SEARCH_TYPES}) & version_parent = null`;
+  const [rated, hyped] = await Promise.all([
+    postGames([SEARCH_FIELDS, `where ${where};`, "sort total_rating_count desc;", `limit ${size};`].join("\n"), "IGDB search"),
+    postGames([SEARCH_FIELDS, `where ${where} & hypes > 0;`, "sort hypes desc;", "limit 20;"].join("\n"), "IGDB search hypes"),
+  ]);
+  const byId = new Map<number, IgdbGame>();
+  for (const game of [...gamesFrom(rated), ...gamesFrom(hyped)]) {
+    if (typeof game.id === "number" && !byId.has(game.id)) byId.set(game.id, game);
+  }
+  return [...byId.values()];
 }
 
 export async function queryIgdbGames(body: string): Promise<IgdbGame[]> {

@@ -36,6 +36,7 @@ const searchQuery = z.object({
   genre: z.enum(SEARCH_GENRES.map((item) => item.id) as [string, ...string[]]).optional(),
   platform: z.enum(CATALOG_PLATFORMS.map((item) => item.id) as [string, ...string[]]).optional(),
   year: z.coerce.number().int().min(1970).max(2035).optional(),
+  offset: z.coerce.number().int().min(0).max(500).optional(),
 });
 
 const slugParams = z.object({
@@ -105,7 +106,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(400).send({ error: t("api.missingQuery") });
     }
 
-    return { games: await searchGames(query, filters) };
+    return searchGames(query, filters, parsed.data.offset ?? 0);
   });
 
   app.get("/games/:slug", async (request, reply) => {
