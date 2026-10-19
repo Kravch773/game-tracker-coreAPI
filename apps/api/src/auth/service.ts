@@ -70,7 +70,7 @@ export async function registerUser(input: RegisterInput): Promise<AuthUser> {
     const inserted = await db
       .insert(users)
       .values({ email: input.email, username: input.username, passwordHash })
-      .returning({ id: users.id, username: users.username, email: users.email });
+      .returning({ id: users.id, username: users.username, email: users.email, steamId: users.steamId });
     const user = inserted[0];
     if (!user) throw new Error("User insert returned no row");
     return user;
@@ -89,7 +89,7 @@ export async function loginUser(login: string, password: string): Promise<AuthUs
     .limit(1);
   const user = rows[0];
   if (!user || !(await verifyPassword(password, user.passwordHash))) return null;
-  return { id: user.id, username: user.username, email: user.email };
+  return { id: user.id, username: user.username, email: user.email, steamId: user.steamId };
 }
 
 export async function changeUsername(userId: string, username: string, password: string): Promise<AuthUser> {
@@ -105,7 +105,7 @@ export async function changeUsername(userId: string, username: string, password:
     .update(users)
     .set({ username })
     .where(eq(users.id, user.id))
-    .returning({ id: users.id, username: users.username, email: users.email });
+    .returning({ id: users.id, username: users.username, email: users.email, steamId: users.steamId });
   const next = updated[0];
   if (!next) throw new Error("Username update returned no row");
   return next;
@@ -129,7 +129,7 @@ export async function userFromRequest(request: FastifyRequest): Promise<AuthUser
   if (!userId) return null;
 
   const rows = await db
-    .select({ id: users.id, username: users.username, email: users.email })
+    .select({ id: users.id, username: users.username, email: users.email, steamId: users.steamId })
     .from(users)
     .where(eq(users.id, userId))
     .limit(1);

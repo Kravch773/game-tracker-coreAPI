@@ -19,6 +19,7 @@ export const env = {
   twitchClientId: process.env.TWITCH_CLIENT_ID?.trim() ?? "",
   twitchClientSecret: process.env.TWITCH_CLIENT_SECRET?.trim() ?? "",
   rawgApiKey: process.env.RAWG_API_KEY?.trim() ?? "",
+  steamWebApiKey: process.env.STEAM_WEB_API_KEY?.trim() ?? "",
   sessionSecret: required("SESSION_SECRET"),
 };
 

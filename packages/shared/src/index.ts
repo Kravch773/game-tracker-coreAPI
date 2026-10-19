@@ -108,6 +108,7 @@ export type GameDetails = GameSummary & {
 
 export type GameSearchResponse = {
   games: GameSummary[];
+  hasMore: boolean;
 };
 
 export const HOME_COLLECTION_IDS = [
@@ -180,6 +181,7 @@ export type AuthUser = {
   id: string;
   username: string;
   email: string;
+  steamId: string | null;
 };
 
 export type GameEntry = {
@@ -187,6 +189,7 @@ export type GameEntry = {
   rating: number | null;
   review: string | null;
   favorite: boolean;
+  steamMinutes: number | null;
 };
 
 export type LibraryGame = GameSummary & {
@@ -196,6 +199,14 @@ export type LibraryGame = GameSummary & {
   startedAt: string | null;
   finishedAt: string | null;
   metacriticScore: number | null;
+  steamMinutes: number | null;
+};
+
+export type SteamSyncResult = {
+  steamId: string;
+  matched: number;
+  added: number;
+  unmatched: number;
 };
 
 export type UserLibrary = {
@@ -208,6 +219,10 @@ export type UserLibrary = {
   followers: number;
   following: number;
   followedByMe: boolean;
+};
+
+export type FollowPerson = {
+  username: string;
 };
 
 export type MyGamesListImportRow = {

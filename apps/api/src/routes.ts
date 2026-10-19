@@ -28,6 +28,7 @@ import {
   setFavorite,
 } from "./library/service.js";
 import { importMyGamesList, parseImportRows } from "./library/import.js";
+import { SteamError, syncSteamLibrary } from "./steam/service.js";
 import { TrailersUnavailableError, trailersForSlug } from "./rawg/trailers.js";
 import { activityFeed, listFollows, setFollow } from "./social/service.js";
 
@@ -227,6 +228,18 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   app.post("/auth/logout", async (_request, reply) => {
     reply.header("Set-Cookie", clearSessionCookie());
     return { ok: true };
+  });
+
+  app.post("/me/steam/sync", async (request, reply) => {
+    const user = await userFromRequest(request);
+    if (!user) return reply.code(401).send({ error: t("auth.signInRequired") });
+    const body = request.body as { profile?: unknown } | null;
+    try {
+      return await syncSteamLibrary(user.id, typeof body?.profile === "string" ? body.profile : "");
+    } catch (error) {
+      if (error instanceof SteamError) return reply.code(error.statusCode).send({ error: error.message });
+      throw error;
+    }
   });
 
   app.get("/auth/me", async (request, reply) => {

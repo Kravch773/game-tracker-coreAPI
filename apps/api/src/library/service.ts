@@ -9,7 +9,7 @@ import {
 } from "@gametracker/shared";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { db } from "../db/client.js";
-import { favorites, follows, games, listEntries, users } from "../db/schema.js";
+import { favorites, follows, games, listEntries, steamPlays, users } from "../db/schema.js";
 
 export class LibraryInputError extends Error {}
 
@@ -37,9 +37,14 @@ export async function libraryForUsername(username: string, viewerId: string | nu
       releaseDate: games.releaseDate,
       platforms: games.platforms,
       metacriticScore: games.metacriticScore,
+      playtimeMinutes: steamPlays.playtimeMinutes,
     })
     .from(listEntries)
     .innerJoin(games, eq(games.id, listEntries.gameId))
+    .leftJoin(
+      steamPlays,
+      and(eq(steamPlays.userId, listEntries.userId), eq(steamPlays.gameId, listEntries.gameId)),
+    )
     .where(eq(listEntries.userId, user.id))
     .orderBy(desc(listEntries.updatedAt));
 
@@ -57,12 +62,17 @@ export async function libraryForUsername(username: string, viewerId: string | nu
       releaseDate: games.releaseDate,
       platforms: games.platforms,
       metacriticScore: games.metacriticScore,
+      playtimeMinutes: steamPlays.playtimeMinutes,
     })
     .from(favorites)
     .innerJoin(games, eq(games.id, favorites.gameId))
     .leftJoin(
       listEntries,
       and(eq(listEntries.userId, favorites.userId), eq(listEntries.gameId, favorites.gameId)),
+    )
+    .leftJoin(
+      steamPlays,
+      and(eq(steamPlays.userId, favorites.userId), eq(steamPlays.gameId, favorites.gameId)),
     )
     .where(eq(favorites.userId, user.id))
     .orderBy(desc(favorites.createdAt));
@@ -108,6 +118,7 @@ export async function entryForSlug(userId: string, slug: string): Promise<GameEn
     rating: entry?.rating ?? null,
     review: entry?.review ?? null,
     favorite: favoriteRows.length > 0,
+    steamMinutes: await steamMinutesFor(userId, game.id),
   };
 }
 
@@ -170,6 +181,7 @@ export async function saveEntry(
     rating,
     review,
     favorite: await isFavorite(userId, game.id),
+    steamMinutes: await steamMinutesFor(userId, game.id),
   };
 }
 
@@ -247,6 +259,7 @@ function toLibraryGame(row: {
   releaseDate: string | null;
   platforms: unknown;
   metacriticScore: number | null;
+  playtimeMinutes: number | null;
 }): LibraryGame {
   return {
     id: row.id,
@@ -263,7 +276,17 @@ function toLibraryGame(row: {
     startedAt: row.startedAt ? row.startedAt.toISOString() : null,
     finishedAt: row.finishedAt ? row.finishedAt.toISOString() : null,
     metacriticScore: row.metacriticScore,
+    steamMinutes: row.playtimeMinutes,
   };
+}
+
+async function steamMinutesFor(userId: string, gameId: string): Promise<number | null> {
+  const rows = await db
+    .select({ minutes: steamPlays.playtimeMinutes })
+    .from(steamPlays)
+    .where(and(eq(steamPlays.userId, userId), eq(steamPlays.gameId, gameId)))
+    .limit(1);
+  return rows[0]?.minutes ?? null;
 }
 
 async function countOf(where: ReturnType<typeof eq>): Promise<number> {
