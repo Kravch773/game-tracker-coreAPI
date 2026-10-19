@@ -1,6 +1,7 @@
 import {
   LIBRARY_STATUSES,
   REVIEW_MAX_LENGTH,
+  stripReviewLinks,
   t,
   type GameEntry,
   type LibraryGame,
@@ -9,7 +10,7 @@ import {
 } from "@gametracker/shared";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { db } from "../db/client.js";
-import { favorites, follows, games, listEntries, steamPlays, users } from "../db/schema.js";
+import { favorites, follows, games, listEntries, steamPlays, steamWishMissing, steamWishes, users } from "../db/schema.js";
 
 export class LibraryInputError extends Error {}
 
@@ -21,6 +22,7 @@ export async function libraryForUsername(username: string, viewerId: string | nu
     .limit(1);
   const user = found[0];
   if (!user) return null;
+  const own = viewerId === user.id;
 
   const entries = await db
     .select({
@@ -41,10 +43,7 @@ export async function libraryForUsername(username: string, viewerId: string | nu
     })
     .from(listEntries)
     .innerJoin(games, eq(games.id, listEntries.gameId))
-    .leftJoin(
-      steamPlays,
-      and(eq(steamPlays.userId, listEntries.userId), eq(steamPlays.gameId, listEntries.gameId)),
-    )
+    .leftJoin(steamPlays, own ? and(eq(steamPlays.userId, listEntries.userId), eq(steamPlays.gameId, listEntries.gameId)) : sql`false`)
     .where(eq(listEntries.userId, user.id))
     .orderBy(desc(listEntries.updatedAt));
 
@@ -70,10 +69,7 @@ export async function libraryForUsername(username: string, viewerId: string | nu
       listEntries,
       and(eq(listEntries.userId, favorites.userId), eq(listEntries.gameId, favorites.gameId)),
     )
-    .leftJoin(
-      steamPlays,
-      and(eq(steamPlays.userId, favorites.userId), eq(steamPlays.gameId, favorites.gameId)),
-    )
+    .leftJoin(steamPlays, own ? and(eq(steamPlays.userId, favorites.userId), eq(steamPlays.gameId, favorites.gameId)) : sql`false`)
     .where(eq(favorites.userId, user.id))
     .orderBy(desc(favorites.createdAt));
 
@@ -83,7 +79,9 @@ export async function libraryForUsername(username: string, viewerId: string | nu
     finished: [],
     dropped: [],
     backlog: [],
-    favorites: favoriteRows.map(toLibraryGame),
+    favorites: favoriteRows.map((row) => toLibraryGame(row, own)),
+    steamWishlist: own ? (await steamWishlistRows(user.id)).map((row) => toLibraryGame(row, true)) : [],
+    steamWishlistMissing: own ? await missingWishlistCount(user.id) : 0,
     followers: await countOf(eq(follows.followingId, user.id)),
     following: await countOf(eq(follows.followerId, user.id)),
     followedByMe: viewerId ? await followsUser(viewerId, user.id) : false,
@@ -91,7 +89,7 @@ export async function libraryForUsername(username: string, viewerId: string | nu
 
   for (const entry of entries) {
     if (!isLibraryStatus(entry.status)) continue;
-    library[entry.status].push(toLibraryGame(entry));
+    library[entry.status].push(toLibraryGame(entry, own));
   }
 
   return library;
@@ -116,7 +114,7 @@ export async function entryForSlug(userId: string, slug: string): Promise<GameEn
   return {
     status: entry && isLibraryStatus(entry.status) ? entry.status : null,
     rating: entry?.rating ?? null,
-    review: entry?.review ?? null,
+    review: entry?.review ? stripReviewLinks(entry.review) || null : null,
     favorite: favoriteRows.length > 0,
     steamMinutes: await steamMinutesFor(userId, game.id),
   };
@@ -238,12 +236,45 @@ export function parseEntryBody(body: unknown): {
 
 function normalizeReview(review: string | null): string | null {
   if (!review) return null;
-  const trimmed = review.trim();
-  if (!trimmed) return null;
-  if ([...trimmed].length > REVIEW_MAX_LENGTH) {
+  const stripped = stripReviewLinks(review);
+  if (!stripped) return null;
+  if ([...stripped].length > REVIEW_MAX_LENGTH) {
     throw new LibraryInputError(t("library.reviewTooLong"));
   }
-  return trimmed;
+  return stripped;
+}
+
+async function steamWishlistRows(userId: string) {
+  return db
+    .select({
+      rating: listEntries.rating,
+      review: listEntries.review,
+      addedAt: steamWishes.syncedAt,
+      startedAt: listEntries.startedAt,
+      finishedAt: listEntries.finishedAt,
+      id: games.id,
+      slug: games.slug,
+      title: games.title,
+      coverUrl: games.coverUrl,
+      releaseDate: games.releaseDate,
+      platforms: games.platforms,
+      metacriticScore: games.metacriticScore,
+      playtimeMinutes: steamPlays.playtimeMinutes,
+    })
+    .from(steamWishes)
+    .innerJoin(games, eq(games.id, steamWishes.gameId))
+    .leftJoin(listEntries, and(eq(listEntries.userId, steamWishes.userId), eq(listEntries.gameId, steamWishes.gameId)))
+    .leftJoin(steamPlays, and(eq(steamPlays.userId, steamWishes.userId), eq(steamPlays.gameId, steamWishes.gameId)))
+    .where(eq(steamWishes.userId, userId))
+    .orderBy(desc(steamWishes.syncedAt));
+}
+
+async function missingWishlistCount(userId: string): Promise<number> {
+  const rows = await db
+    .select({ count: sql<number>`cast(count(*) as int)` })
+    .from(steamWishMissing)
+    .where(eq(steamWishMissing.userId, userId));
+  return Number(rows[0]?.count ?? 0);
 }
 
 function toLibraryGame(row: {
@@ -260,7 +291,7 @@ function toLibraryGame(row: {
   platforms: unknown;
   metacriticScore: number | null;
   playtimeMinutes: number | null;
-}): LibraryGame {
+}, includeSteam: boolean): LibraryGame {
   return {
     id: row.id,
     slug: row.slug,
@@ -271,12 +302,12 @@ function toLibraryGame(row: {
       ? row.platforms.filter((item): item is string => typeof item === "string")
       : [],
     rating: row.rating == null ? null : Number(row.rating),
-    review: row.review,
+    review: row.review ? stripReviewLinks(row.review) || null : null,
     addedAt: row.addedAt.toISOString(),
     startedAt: row.startedAt ? row.startedAt.toISOString() : null,
     finishedAt: row.finishedAt ? row.finishedAt.toISOString() : null,
     metacriticScore: row.metacriticScore,
-    steamMinutes: row.playtimeMinutes,
+    steamMinutes: includeSteam ? row.playtimeMinutes : null,
   };
 }
 

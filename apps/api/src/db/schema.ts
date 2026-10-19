@@ -155,6 +155,33 @@ export const steamPlays = pgTable(
   (table) => [primaryKey({ columns: [table.userId, table.gameId] })],
 );
 
+export const steamWishes = pgTable(
+  "steam_wishes",
+  {
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    gameId: uuid("game_id")
+      .notNull()
+      .references(() => games.id, { onDelete: "cascade" }),
+    syncedAt: timestamp("synced_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [primaryKey({ columns: [table.userId, table.gameId] })],
+);
+
+export const steamWishMissing = pgTable(
+  "steam_wish_missing",
+  {
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    appId: text("app_id").notNull(),
+    title: text("title"),
+    syncedAt: timestamp("synced_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [primaryKey({ columns: [table.userId, table.appId] })],
+);
+
 export const favorites = pgTable(
   "favorites",
   {

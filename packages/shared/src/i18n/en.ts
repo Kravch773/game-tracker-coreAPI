@@ -3,6 +3,11 @@ import type { Messages } from "./uk";
 export const en = {
   meta: {
     description: "A game catalog with covers, release dates, and store links",
+    genre: "Games in {name}: covers, release dates, and store links.",
+    platform: "Games for {name}: covers, release dates, and store links.",
+    calendar: "Release calendar: which games come out this month.",
+    activity: "New scores, lists, and reviews from players.",
+    profile: "Game lists, scores, and favorites for {username}.",
   },
   common: {
     close: "Close",
@@ -196,6 +201,7 @@ export const en = {
     importEmpty: "The file has no games.",
     importBadFile: "This is not a MyGamesList export.",
     importFailed: "Could not import.",
+    steamAdd: "Add Steam",
     steamLabel: "Steam profile",
     steamPlaceholder: "https://steamcommunity.com/id/…",
     steamSync: "Sync",
@@ -207,6 +213,17 @@ export const en = {
     steamFailed: "Could not sync with Steam.",
     steamUnconfigured: "Steam sync is not configured yet.",
     steamTaken: "This Steam profile is already linked to another account.",
+    steamWishlist: "Steam wishlist",
+    steamWishlistSync: "Sync wishlist",
+    steamWishlistSyncing: "Syncing wishlist…",
+    steamWishlistDone: "On the wishlist {matched}. Not in the catalog {unmatched}.",
+    steamWishlistPrivate: "Steam did not return the wishlist. Make it public on the Steam profile.",
+    steamWishlistHint: "The Steam wishlist has to be public.",
+    steamWishlistMissingTitle: "Steam wishlist outside the catalog",
+    steamWishlistMissingLead: "These Steam wishlist games are not in the catalog.",
+    steamWishlistMissingEmpty: "Every wishlist game is in the catalog.",
+    steamWishlistMissingLink: "Not in the catalog: {count}",
+    steamWishlistApp: "Steam {appId}",
   },
   wheel: {
     title: "Random game",
@@ -229,6 +246,7 @@ export const en = {
   },
   settings: {
     title: "Settings",
+    steamTitle: "Steam integration",
     username: "Name",
     password: "Password",
     current: "Current password",

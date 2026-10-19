@@ -16,6 +16,7 @@ import { clearSessionCookie, sessionCookie, signSession } from "./auth/session.j
 import { browseCatalog } from "./games/browse.js";
 import { releaseCalendar } from "./games/calendar.js";
 import { backlogInMonth, favoritesForUser, listForUser, loadHomeCollections, upcomingFromBacklog } from "./games/collections.js";
+import { sitemapPage } from "./games/sitemap.js";
 import { getGameBySlug, searchGames } from "./games/service.js";
 import {
   LibraryInputError,
@@ -28,7 +29,7 @@ import {
   setFavorite,
 } from "./library/service.js";
 import { importMyGamesList, parseImportRows } from "./library/import.js";
-import { SteamError, syncSteamLibrary } from "./steam/service.js";
+import { SteamError, listSteamWishlistMissing, syncSteamLibrary, syncSteamWishlist } from "./steam/service.js";
 import { TrailersUnavailableError, trailersForSlug } from "./rawg/trailers.js";
 import { activityFeed, listFollows, setFollow } from "./social/service.js";
 
@@ -90,6 +91,11 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     const following = z.object({ following: z.string().optional() }).safeParse(request.query);
     const onlyFollowing = following.success && following.data.following === "1" && user != null;
     return { events: await activityFeed(user?.id ?? null, onlyFollowing) };
+  });
+
+  app.get("/sitemap", async (request) => {
+    const parsed = z.object({ page: z.coerce.number().int().min(1).max(20).optional() }).safeParse(request.query);
+    return sitemapPage(parsed.success ? (parsed.data.page ?? 1) : 1);
   });
 
   app.get("/games", async (request, reply) => {
@@ -240,6 +246,24 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       if (error instanceof SteamError) return reply.code(error.statusCode).send({ error: error.message });
       throw error;
     }
+  });
+
+  app.post("/me/steam/wishlist", async (request, reply) => {
+    const user = await userFromRequest(request);
+    if (!user) return reply.code(401).send({ error: t("auth.signInRequired") });
+    const body = request.body as { profile?: unknown } | null;
+    try {
+      return await syncSteamWishlist(user.id, typeof body?.profile === "string" ? body.profile : "");
+    } catch (error) {
+      if (error instanceof SteamError) return reply.code(error.statusCode).send({ error: error.message });
+      throw error;
+    }
+  });
+
+  app.get("/me/steam/wishlist/missing", async (request, reply) => {
+    const user = await userFromRequest(request);
+    if (!user) return reply.code(401).send({ error: t("auth.signInRequired") });
+    return { apps: await listSteamWishlistMissing(user.id) };
   });
 
   app.get("/auth/me", async (request, reply) => {

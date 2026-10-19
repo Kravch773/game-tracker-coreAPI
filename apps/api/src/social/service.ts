@@ -1,4 +1,4 @@
-import { t, type ActivityEvent } from "@gametracker/shared";
+import { stripReviewLinks, t, type ActivityEvent } from "@gametracker/shared";
 import { and, desc, eq, inArray, isNotNull, or, sql } from "drizzle-orm";
 import { AuthInputError } from "../auth/service.js";
 import { db } from "../db/client.js";
@@ -117,7 +117,7 @@ function toEvent(row: {
       username: row.username,
       status: row.status,
       rating: row.rating == null ? null : Number(row.rating),
-      review: row.review,
+      review: row.review ? stripReviewLinks(row.review) || null : null,
       at,
       game: toSummary(row.game),
     },

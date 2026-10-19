@@ -1,4 +1,4 @@
-import type { CommunityReview, CommunityScore } from "@gametracker/shared";
+import { stripReviewLinks, type CommunityReview, type CommunityScore } from "@gametracker/shared";
 import { and, desc, eq, isNotNull, sql } from "drizzle-orm";
 import { db } from "../db/client.js";
 import { listEntries, users } from "../db/schema.js";
@@ -34,7 +34,7 @@ export async function communityForGame(gameId: string): Promise<{
   return {
     community: { average, count },
     reviews: reviewRows.flatMap((row) => {
-      const review = row.review?.trim();
+      const review = row.review ? stripReviewLinks(row.review) : "";
       if (!review) return [];
       const at = row.at instanceof Date ? row.at.toISOString() : new Date(row.at).toISOString();
       return [{ username: row.username, rating: row.rating == null ? null : Number(row.rating), review, at }];

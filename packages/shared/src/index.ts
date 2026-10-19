@@ -33,6 +33,24 @@ export {
 export const REVIEW_MAX_LENGTH = 2000;
 export const RATING_MAX = 11;
 
+const REVIEW_LINK = /\b(?:[a-z][a-z0-9+.-]*:\/\/|www\.)\S+/gi;
+const HAS_REVIEW_LINK = /(?:[a-z][a-z0-9+.-]*:\/\/|www\.)/i;
+
+export function stripReviewLinks(value: string): string {
+  const withoutLabels = value
+    .replace(/\[([^\]]*)\]\(\s*(?:[a-z][a-z0-9+.-]*:\/\/|www\.)[^)\s]+\s*\)/gi, (_match, label: string) =>
+      HAS_REVIEW_LINK.test(label) ? "" : label,
+    )
+    .replace(/<a\b[^>]*>([\s\S]*?)<\/a>/gi, (_match, label: string) => (HAS_REVIEW_LINK.test(label) ? "" : label));
+  const withoutUrls = withoutLabels.replace(REVIEW_LINK, (match) => match.match(/[.,!?;:)\]'"]+$/)?.[0] ?? "");
+  return withoutUrls
+    .replace(/[ \t]+([.,!?;:])/g, "$1")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 export type GameSummary = {
   id: string;
   slug: string;
@@ -104,6 +122,13 @@ export type GameDetails = GameSummary & {
   similar: GameSummary[];
   community: CommunityScore;
   reviews: CommunityReview[];
+};
+
+export type SitemapPayload = {
+  page: number;
+  pageCount: number;
+  games: { slug: string; updatedAt: string }[];
+  users: { username: string; createdAt: string }[];
 };
 
 export type GameSearchResponse = {
@@ -209,6 +234,17 @@ export type SteamSyncResult = {
   unmatched: number;
 };
 
+export type SteamWishlistResult = {
+  steamId: string;
+  matched: number;
+  unmatched: number;
+};
+
+export type SteamWishlistMissingApp = {
+  appId: string;
+  title: string | null;
+};
+
 export type UserLibrary = {
   user: { username: string };
   playing: LibraryGame[];
@@ -216,6 +252,8 @@ export type UserLibrary = {
   dropped: LibraryGame[];
   backlog: LibraryGame[];
   favorites: LibraryGame[];
+  steamWishlist: LibraryGame[];
+  steamWishlistMissing: number;
   followers: number;
   following: number;
   followedByMe: boolean;

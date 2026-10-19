@@ -1,4 +1,4 @@
-import { LIBRARY_STATUSES, REVIEW_MAX_LENGTH, t, type LibraryStatus, type MyGamesListImportResult, type MyGamesListImportRow } from "@gametracker/shared";
+import { LIBRARY_STATUSES, REVIEW_MAX_LENGTH, stripReviewLinks, t, type LibraryStatus, type MyGamesListImportResult, type MyGamesListImportRow } from "@gametracker/shared";
 import { db } from "../db/client.js";
 import { listEntries } from "../db/schema.js";
 import { searchIgdb } from "../igdb/client.js";
@@ -109,9 +109,9 @@ function isStatus(value: unknown): value is LibraryStatus {
 
 function clipReview(review: string | null): string | null {
   if (!review) return null;
-  const trimmed = review.trim();
-  if (!trimmed) return null;
-  return [...trimmed].slice(0, REVIEW_MAX_LENGTH).join("");
+  const stripped = stripReviewLinks(review);
+  if (!stripped) return null;
+  return [...stripped].slice(0, REVIEW_MAX_LENGTH).join("");
 }
 
 function parseStamp(value: string | null): Date | null {

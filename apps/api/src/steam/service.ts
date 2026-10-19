@@ -1,7 +1,7 @@
-import { t, type SteamSyncResult } from "@gametracker/shared";
-import { and, eq, inArray } from "drizzle-orm";
+import { t, type SteamSyncResult, type SteamWishlistMissingApp, type SteamWishlistResult } from "@gametracker/shared";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "../db/client.js";
-import { gameLinks, listEntries, steamPlays, users } from "../db/schema.js";
+import { gameLinks, listEntries, steamPlays, steamWishMissing, steamWishes, users } from "../db/schema.js";
 import { env } from "../env.js";
 
 export class SteamError extends Error {
@@ -164,6 +164,92 @@ async function steamGet<T>(method: string, params: Record<string, string>): Prom
     if (error instanceof SteamError) throw error;
     throw new SteamError(t("profile.steamFailed"), 502);
   }
+}
+
+type WishItem = { appid?: number };
+
+export async function syncSteamWishlist(userId: string, profile: string): Promise<SteamWishlistResult> {
+  const steamId = await resolveSteamId(profile);
+  const appIds = await wishlistApps(steamId);
+  const matched = await matchCatalog(appIds);
+  const found = new Set(matched.map((row) => row.appId));
+  const missingIds = appIds.filter((appId) => !found.has(appId));
+  const names = await steamAppNames(missingIds);
+
+  try {
+    await db.transaction(async (tx) => {
+      await tx.update(users).set({ steamId }).where(eq(users.id, userId));
+      await tx.delete(steamWishes).where(eq(steamWishes.userId, userId));
+      await tx.delete(steamWishMissing).where(eq(steamWishMissing.userId, userId));
+      for (const group of chunks(matched, 200)) {
+        await tx.insert(steamWishes).values(group.map((row) => ({ userId, gameId: row.gameId })));
+      }
+      for (const group of chunks(missingIds, 200)) {
+        await tx.insert(steamWishMissing).values(
+          group.map((appId) => ({
+            userId,
+            appId,
+            title: names.get(appId)?.slice(0, 200) ?? null,
+          })),
+        );
+      }
+    });
+  } catch (error) {
+    if (pgCode(error) === "23505") throw new SteamError(t("profile.steamTaken"), 409);
+    throw error;
+  }
+
+  return { steamId, matched: matched.length, unmatched: missingIds.length };
+}
+
+export async function listSteamWishlistMissing(userId: string): Promise<SteamWishlistMissingApp[]> {
+  return db
+    .select({ appId: steamWishMissing.appId, title: steamWishMissing.title })
+    .from(steamWishMissing)
+    .where(eq(steamWishMissing.userId, userId))
+    .orderBy(asc(sql`coalesce(${steamWishMissing.title}, ${steamWishMissing.appId})`))
+    .limit(500);
+}
+
+async function wishlistApps(steamId: string): Promise<string[]> {
+  const payload = await steamGet<{ response?: { items?: WishItem[] } }>("IWishlistService/GetWishlist/v1", {
+    steamid: steamId,
+  });
+  const items = payload.response?.items;
+  if (!Array.isArray(items)) throw new SteamError(t("profile.steamWishlistPrivate"));
+  return [
+    ...new Set(
+      items
+        .map((item) => item.appid)
+        .filter((appId): appId is number => typeof appId === "number" && Number.isInteger(appId) && appId > 0)
+        .map(String),
+    ),
+  ];
+}
+
+async function steamAppNames(appIds: string[]): Promise<Map<string, string>> {
+  const names = new Map<string, string>();
+  for (const group of chunks(appIds, 80)) {
+    const input = JSON.stringify({
+      ids: group.map((appid) => ({ appid: Number(appid) })),
+      context: { language: "english", country_code: "US" },
+      data_request: { include_basic_info: true },
+    });
+    try {
+      const response = await fetch(
+        `https://api.steampowered.com/IStoreBrowseService/GetItems/v1/?input_json=${encodeURIComponent(input)}`,
+        { signal: AbortSignal.timeout(20_000) },
+      );
+      if (!response.ok) continue;
+      const payload = (await response.json()) as { response?: { store_items?: { appid?: number; name?: string }[] } };
+      for (const item of payload.response?.store_items ?? []) {
+        if (item.appid && item.name) names.set(String(item.appid), item.name);
+      }
+    } catch {
+      continue;
+    }
+  }
+  return names;
 }
 
 function chunks<T>(items: T[], size: number): T[][] {
