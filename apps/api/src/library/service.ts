@@ -13,8 +13,6 @@ import { favorites, follows, games, listEntries, users } from "../db/schema.js";
 
 export class LibraryInputError extends Error {}
 
-const SCORED = new Set<LibraryStatus>(["finished", "dropped"]);
-
 export async function libraryForUsername(username: string, viewerId: string | null): Promise<UserLibrary | null> {
   const found = await db
     .select({ id: users.id, username: users.username })
@@ -121,10 +119,9 @@ export async function saveEntry(
   const game = await gameBySlug(slug);
   if (!game) throw new MissingGameError();
 
-  const scored = SCORED.has(input.status);
-  const rating = scored && input.rating != null ? normalizeUserRating(input.rating) : null;
-  const review = scored ? normalizeReview(input.review) : null;
-  if (scored && input.rating != null && rating == null) {
+  const rating = input.rating != null ? normalizeUserRating(input.rating) : null;
+  const review = normalizeReview(input.review);
+  if (input.rating != null && rating == null) {
     throw new LibraryInputError(t("library.ratingInvalid"));
   }
 

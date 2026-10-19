@@ -6,7 +6,7 @@ import type { IgdbGame } from "../igdb/map.js";
 import { storeIgdbGames } from "../games/service.js";
 import { LibraryInputError, normalizeUserRating } from "./service.js";
 
-const SCORED = new Set<LibraryStatus>(["finished", "dropped"]);
+const SCORED = new Set<LibraryStatus>(["playing", "finished", "dropped"]);
 const BATCH_LIMIT = 20;
 
 export async function importMyGamesList(userId: string, rows: MyGamesListImportRow[]): Promise<MyGamesListImportResult> {
