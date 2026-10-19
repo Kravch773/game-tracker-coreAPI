@@ -5,6 +5,29 @@ import { db } from "../db/client.js";
 import { follows, games, listEntries, users } from "../db/schema.js";
 import { toSummary } from "../games/present.js";
 
+export async function listFollows(
+  username: string,
+  kind: "followers" | "following",
+): Promise<{ username: string }[] | null> {
+  const found = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(sql`lower(${users.username}) = ${username.toLowerCase()}`)
+    .limit(1);
+  const user = found[0];
+  if (!user) return null;
+
+  const person = kind === "following" ? follows.followingId : follows.followerId;
+  const owner = kind === "following" ? follows.followerId : follows.followingId;
+  return db
+    .select({ username: users.username })
+    .from(follows)
+    .innerJoin(users, eq(users.id, person))
+    .where(eq(owner, user.id))
+    .orderBy(desc(follows.createdAt))
+    .limit(100);
+}
+
 export async function setFollow(
   followerId: string,
   username: string,

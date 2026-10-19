@@ -29,7 +29,7 @@ import {
 } from "./library/service.js";
 import { importMyGamesList, parseImportRows } from "./library/import.js";
 import { TrailersUnavailableError, trailersForSlug } from "./rawg/trailers.js";
-import { activityFeed, setFollow } from "./social/service.js";
+import { activityFeed, listFollows, setFollow } from "./social/service.js";
 
 const searchQuery = z.object({
   q: z.string().trim().max(80).optional(),
@@ -243,6 +243,16 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     const library = await libraryForUsername(parsed.data.username, viewer?.id ?? null);
     if (!library) return reply.code(404).send({ error: t("profile.notFound") });
     return library;
+  });
+
+  app.get("/users/:username/follows", async (request, reply) => {
+    const parsed = usernameParams.safeParse(request.params);
+    if (!parsed.success) return reply.code(400).send({ error: t("api.badUsername") });
+    const query = z.object({ kind: z.enum(["followers", "following"]) }).safeParse(request.query);
+    if (!query.success) return reply.code(400).send({ error: t("api.badPayload") });
+    const users = await listFollows(parsed.data.username, query.data.kind);
+    if (!users) return reply.code(404).send({ error: t("profile.notFound") });
+    return { users };
   });
 
   app.put("/users/:username/follow", async (request, reply) => {
