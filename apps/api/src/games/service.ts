@@ -13,6 +13,7 @@ import { fetchIgdbGame, fetchTimeToBeat, queryIgdbGames, searchIgdb } from "../i
 import { communityForGame } from "./community.js";
 import { mapIgdbDetails, mapIgdbGame, type MappedGame } from "../igdb/map.js";
 import { scheduleMetacriticEnrich } from "../rawg/enrich.js";
+import { ukrainianGames } from "./origin.js";
 import { originsFor } from "../steam/curators.js";
 import { toDetails, toSummary } from "./present.js";
 
@@ -30,7 +31,9 @@ export async function searchGames(
   rawQuery: string,
   filters: SearchFilters = {},
   offset = 0,
+  origin?: "ua",
 ): Promise<{ games: GameSummary[]; hasMore: boolean }> {
+  if (origin === "ua") return ukrainianGames(offset);
   const query = rawQuery.replace(/\s+/g, " ").trim();
   const key = cacheKey(query, filters);
   const filtered = hasFilters(filters);

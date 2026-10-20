@@ -3,6 +3,7 @@ import type { IgdbGame } from "./map.js";
 
 const TOKEN_URL = "https://id.twitch.tv/oauth2/token";
 const GAMES_URL = "https://api.igdb.com/v4/games";
+const EXTERNAL_URL = "https://api.igdb.com/v4/external_games";
 const COMPANIES_URL = "https://api.igdb.com/v4/companies";
 const TIME_URL = "https://api.igdb.com/v4/game_time_to_beats";
 
@@ -34,6 +35,43 @@ export async function searchIgdb(query: string, limit = 20): Promise<IgdbGame[]>
 
 export async function queryIgdbGames(body: string): Promise<IgdbGame[]> {
   return gamesFrom(await postGames(body, "IGDB query"));
+}
+
+export async function igdbIdsForSteamApps(appIds: string[]): Promise<number[]> {
+  const ids = new Set<number>();
+  for (let index = 0; index < appIds.length; index += 40) {
+    const quoted = appIds
+      .slice(index, index + 40)
+      .filter((id) => /^\d+$/.test(id))
+      .map((id) => `"${id}"`)
+      .join(",");
+    if (!quoted) continue;
+    const payload = await postIgdb(
+      EXTERNAL_URL,
+      `fields game; where external_game_source = 1 & uid = (${quoted}); limit 500;`,
+      "IGDB steam apps",
+    );
+    if (!Array.isArray(payload)) continue;
+    for (const row of payload) {
+      if (!row || typeof row !== "object" || !("game" in row) || typeof row.game !== "number") continue;
+      ids.add(row.game);
+    }
+  }
+  return [...ids];
+}
+
+export async function fetchIgdbGamesByIds(ids: number[]): Promise<IgdbGame[]> {
+  const games: IgdbGame[] = [];
+  for (let index = 0; index < ids.length; index += 50) {
+    const chunk = ids.slice(index, index + 50).filter((id) => Number.isInteger(id)).join(",");
+    if (!chunk) continue;
+    games.push(
+      ...gamesFrom(
+        await postGames([SEARCH_FIELDS, `where id = (${chunk});`, "limit 50;"].join("\n"), "IGDB games by id"),
+      ),
+    );
+  }
+  return games;
 }
 
 export async function findCompanyIds(name: string): Promise<number[]> {
