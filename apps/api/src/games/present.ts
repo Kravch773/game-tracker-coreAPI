@@ -49,6 +49,7 @@ export function toDetails(
     videos: videosOf(details?.videos),
     developers: stringList(details?.developers),
     publishers: stringList(details?.publishers),
+    series: details?.series?.trim() || null,
     themes: stringList(details?.themes),
     ageRatings: stringList(details?.ageRatings),
     timeToBeat: timeToBeatOf(details?.timeToBeat),

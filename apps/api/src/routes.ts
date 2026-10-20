@@ -42,7 +42,15 @@ const searchQuery = z.object({
   offset: z.coerce.number().int().min(0).max(500).optional(),
   origin: z.enum(["ua", "ru"]).optional(),
   sort: z.enum(["popular", "release", "title"]).optional(),
+  developer: z.string().trim().max(80).optional(),
+  publisher: z.string().trim().max(80).optional(),
+  series: z.string().trim().max(80).optional(),
 });
+
+function textFilter(value: string | undefined): string | undefined {
+  const text = value?.trim() ?? "";
+  return text.length >= 2 ? text : undefined;
+}
 
 const slugParams = z.object({
   slug: z.string().trim().min(1),
@@ -53,7 +61,7 @@ const usernameParams = z.object({
 });
 
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
-  app.get("/health", async () => ({ ok: true }));
+  app.get("/health", async () => ({ ok: true, uptime: Math.round(process.uptime()) }));
 
   app.get("/collections", async (request) => {
     const user = await userFromRequest(request);
@@ -123,9 +131,13 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       platform: parsed.data.platform as SearchFilters["platform"],
       year: parsed.data.year,
       sort: parsed.data.sort,
+      developer: textFilter(parsed.data.developer),
+      publisher: textFilter(parsed.data.publisher),
+      series: textFilter(parsed.data.series),
     };
     const sortedBrowse = parsed.data.sort === "release" || parsed.data.sort === "title";
-    if (!query.trim() && !filters.genre && !filters.platform && !filters.year && parsed.data.origin !== "ua" && parsed.data.origin !== "ru" && !sortedBrowse) {
+    const credit = Boolean(filters.developer || filters.publisher || filters.series);
+    if (!query.trim() && !filters.genre && !filters.platform && !filters.year && !credit && parsed.data.origin !== "ua" && parsed.data.origin !== "ru" && !sortedBrowse) {
       return reply.code(400).send({ error: t("api.missingQuery") });
     }
 

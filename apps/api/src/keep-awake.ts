@@ -1,15 +1,18 @@
-const INTERVAL_MS = 8 * 60 * 1000;
+const INTERVAL_MS = 4 * 60 * 1000;
+const HEALTH_URL = "https://game-tracker-coreAPI.onrender.com/health";
 
 export function startKeepAwake(log: {
   info: (message: string) => void;
   warn: (obj: object, message: string) => void;
 }): void {
-  const base = process.env.RENDER_EXTERNAL_URL?.trim().replace(/\/$/, "");
-  if (!base) return;
+  if (process.env.RENDER !== "true") return;
 
-  const url = `${base}/health`;
   const ping = () => {
-    void fetch(url, { signal: AbortSignal.timeout(20_000) })
+    const fresh = `${HEALTH_URL}?t=${Date.now()}`;
+    void fetch(`https://r.jina.ai/${fresh}`, {
+      signal: AbortSignal.timeout(25_000),
+      headers: { Accept: "text/plain" },
+    })
       .then((response) => {
         if (!response.ok) log.warn({ status: response.status }, "keep-awake ping failed");
       })
@@ -18,7 +21,7 @@ export function startKeepAwake(log: {
       });
   };
 
-  const first = setTimeout(ping, 60_000);
+  const first = setTimeout(ping, 15_000);
   const timer = setInterval(ping, INTERVAL_MS);
   first.unref();
   timer.unref();

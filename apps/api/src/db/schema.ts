@@ -56,6 +56,7 @@ export const gameDetails = pgTable("game_details", {
   videos: jsonb("videos").$type<StoredVideo[]>().notNull().default([]),
   developers: jsonb("developers").$type<string[]>().notNull().default([]),
   publishers: jsonb("publishers").$type<string[]>().notNull().default([]),
+  series: text("series"),
   themes: jsonb("themes").$type<string[]>().notNull().default([]),
   ageRatings: jsonb("age_ratings").$type<string[]>().notNull().default([]),
   timeToBeat: jsonb("time_to_beat").$type<StoredTimeToBeat | null>(),

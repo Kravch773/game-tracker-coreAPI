@@ -5,6 +5,7 @@ import { collectionCache, curatorApps, gameLinks, games, originStudios } from ".
 import { igdbConfigured } from "../env.js";
 import { developerCompanies, fetchGamesByDevelopers, fetchIgdbGamesByIds, igdbIdsForSteamApps, queryIgdbGames } from "../igdb/client.js";
 import { toSummary } from "./present.js";
+import { looseIncludes } from "./text.js";
 import { storeIgdbGames } from "./service.js";
 import { refreshCurators } from "../steam/curators.js";
 
@@ -62,7 +63,7 @@ async function narrow(ids: string[], filters: SearchFilters, query: string): Pro
     const row = byId.get(id);
     return row ? [row] : [];
   });
-  if (needle.length >= 2) ordered = ordered.filter((row) => row.title.toLowerCase().includes(needle));
+  if (needle.length >= 2) ordered = ordered.filter((row) => looseIncludes(row.title, needle));
   if (year) ordered = ordered.filter((row) => (row.releaseDate ?? "").startsWith(year));
   if (platform) {
     ordered = ordered.filter((row) => (Array.isArray(row.platforms) ? row.platforms : []).includes(platform.name));

@@ -5,6 +5,7 @@ const TOKEN_URL = "https://id.twitch.tv/oauth2/token";
 const GAMES_URL = "https://api.igdb.com/v4/games";
 const EXTERNAL_URL = "https://api.igdb.com/v4/external_games";
 const COMPANIES_URL = "https://api.igdb.com/v4/companies";
+const FRANCHISES_URL = "https://api.igdb.com/v4/franchises";
 const TIME_URL = "https://api.igdb.com/v4/game_time_to_beats";
 
 let tokenCache: { value: string; expiresAt: number } | null = null;
@@ -22,12 +23,16 @@ export async function searchIgdb(query: string, limit = 20): Promise<IgdbGame[]>
   if (!term) return [];
   const size = Math.min(80, Math.max(1, Math.floor(limit)));
   const where = `name ~ *"${term}"* & game_type = (${SEARCH_TYPES}) & version_parent = null`;
-  const [rated, hyped] = await Promise.all([
+  const [rated, hyped, named] = await Promise.all([
     postGames([SEARCH_FIELDS, `where ${where};`, "sort total_rating_count desc;", `limit ${size};`].join("\n"), "IGDB search"),
     postGames([SEARCH_FIELDS, `where ${where} & hypes > 0;`, "sort hypes desc;", "limit 20;"].join("\n"), "IGDB search hypes"),
+    postGames(
+      [SEARCH_FIELDS, `search "${term}";`, `where game_type = (${SEARCH_TYPES}) & version_parent = null;`, "limit 20;"].join("\n"),
+      "IGDB name search",
+    ),
   ]);
   const byId = new Map<number, IgdbGame>();
-  for (const game of [...gamesFrom(rated), ...gamesFrom(hyped)]) {
+  for (const game of [...gamesFrom(rated), ...gamesFrom(hyped), ...gamesFrom(named)]) {
     if (typeof game.id === "number" && !byId.has(game.id)) byId.set(game.id, game);
   }
   return [...byId.values()];
@@ -128,6 +133,46 @@ export async function fetchIgdbGamesByIds(ids: number[]): Promise<IgdbGame[]> {
   return games;
 }
 
+export async function matchCompanies(name: string): Promise<number[]> {
+  return matchNames(COMPANIES_URL, name, "IGDB company match");
+}
+
+export async function matchFranchises(name: string): Promise<number[]> {
+  return matchNames(FRANCHISES_URL, name, "IGDB series match");
+}
+
+async function matchNames(url: string, name: string, label: string): Promise<number[]> {
+  const term = name.replace(/["\\*\n\r;]/g, "").trim().slice(0, 80);
+  const folded = term.toLowerCase().replace(/[^a-z0-9\u0400-\u04ff]+/gi, "");
+  if (folded.length < 2) return [];
+  const payload = await postIgdb(url, ["fields name;", `where name ~ *"${term}"*;`, "limit 25;"].join("\n"), label);
+  if (!Array.isArray(payload)) return [];
+  const rows = payload.flatMap((row) => {
+    if (!row || typeof row !== "object") return [];
+    const item = row as { id?: unknown; name?: unknown };
+    if (typeof item.id !== "number" || typeof item.name !== "string") return [];
+    return [{ id: item.id, name: item.name }];
+  });
+  const ranked = rows
+    .map((row) => ({ ...row, rank: nameRank(row.name, term) }))
+    .filter((row) => row.rank < 1000)
+    .sort((a, b) => a.rank - b.rank);
+  const precise = ranked.filter((row) => row.rank < 100);
+  return (precise.length > 0 ? precise : ranked).slice(0, 6).map((row) => row.id);
+}
+
+function nameRank(name: string, term: string): number {
+  const foldedName = name.toLowerCase().replace(/[^a-z0-9\u0400-\u04ff]+/gi, "");
+  const foldedTerm = term.toLowerCase().replace(/[^a-z0-9\u0400-\u04ff]+/gi, "");
+  if (!foldedTerm) return 1000;
+  if (foldedName === foldedTerm) return 0;
+  const nameTokens = name.toLowerCase().split(/[^a-z0-9\u0400-\u04ff]+/i).filter(Boolean);
+  const termTokens = term.toLowerCase().split(/[^a-z0-9\u0400-\u04ff]+/i).filter(Boolean);
+  if (termTokens.length > 0 && termTokens.every((token) => nameTokens.includes(token))) return 1 + foldedName.length;
+  if (foldedName.includes(foldedTerm)) return 100 + foldedName.length;
+  return 1000;
+}
+
 export async function findCompanyIds(name: string): Promise<number[]> {
   const term = name.replace(/["\\*\n\r;]/g, "").trim().slice(0, 120);
   if (term.length < 2) return [];
@@ -162,6 +207,7 @@ export type IgdbGameDetail = {
     company?: { name?: string };
   }[];
   age_ratings?: { organization?: number; rating_category?: { rating?: string } }[];
+  franchises?: { name?: string }[];
   similar_games?: number[];
   language_supports?: { language?: { locale?: string }; language_support_type?: number }[];
 };
@@ -178,7 +224,7 @@ export async function fetchIgdbGame(igdbId: number): Promise<IgdbGameDetail | nu
   }
 
   const body = [
-    "fields storyline,rating,genres.name,screenshots.image_id,videos.video_id,videos.name,themes.name,involved_companies.company.name,involved_companies.developer,involved_companies.publisher,age_ratings.organization,age_ratings.rating_category.rating,similar_games,language_supports.language.locale,language_supports.language_support_type;",
+    "fields storyline,rating,genres.name,screenshots.image_id,videos.video_id,videos.name,themes.name,franchises.name,involved_companies.company.name,involved_companies.developer,involved_companies.publisher,age_ratings.organization,age_ratings.rating_category.rating,similar_games,language_supports.language.locale,language_supports.language_support_type;",
     `where id = ${igdbId};`,
   ].join("\n");
 

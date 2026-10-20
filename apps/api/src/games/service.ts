@@ -9,13 +9,14 @@ import {
 import { db } from "../db/client.js";
 import { gameDetails, gameLinks, games, searchCache, type GameDetailRow, type GameRow } from "../db/schema.js";
 import { igdbConfigured } from "../env.js";
-import { fetchIgdbGame, fetchTimeToBeat, queryIgdbGames, searchIgdb } from "../igdb/client.js";
+import { fetchIgdbGame, fetchTimeToBeat, matchCompanies, matchFranchises, queryIgdbGames, searchIgdb } from "../igdb/client.js";
 import { communityForGame } from "./community.js";
 import { mapIgdbDetails, mapIgdbGame, type MappedGame } from "../igdb/map.js";
 import { scheduleMetacriticEnrich } from "../rawg/enrich.js";
 import { developedByUkrainianStudio, russianGames, ukrainianGames } from "./origin.js";
 import { originsFor } from "../steam/curators.js";
 import { toDetails, toSummary } from "./present.js";
+import { loose, looseIncludes } from "./text.js";
 
 const PAGE_SIZE = 20;
 const SEARCH_POOL = 60;
@@ -33,27 +34,29 @@ export async function searchGames(
   offset = 0,
   origin?: "ua" | "ru",
 ): Promise<{ games: GameSummary[]; hasMore: boolean }> {
-  if (origin === "ua") return ukrainianGames(offset, filters, rawQuery);
-  if (origin === "ru") return russianGames(offset, filters, rawQuery);
+  const credit = Boolean(filters.developer || filters.publisher || filters.series);
+  if (!credit && origin === "ua") return ukrainianGames(offset, filters, rawQuery);
+  if (!credit && origin === "ru") return russianGames(offset, filters, rawQuery);
   const query = rawQuery.replace(/\s+/g, " ").trim();
+  const clauses = await creditClauses(filters);
+  if (clauses === null) return { games: [], hasMore: false };
   const key = cacheKey(query, filters);
   const filtered = hasFilters(filters);
   const start = offset > 0 ? offset : 0;
   const sortedBrowse = filters.sort === "release" || filters.sort === "title";
   if (query.length < 2 && !filtered && !sortedBrowse) return { games: [], hasMore: false };
-
   const cachedIds = await readFreshCache(key);
   if (cachedIds) return pageOf(cachedIds, start);
 
   const needle = query.toLowerCase();
   const local = needle.length >= 2 ? await searchLocal(needle) : [];
-  const titled = local.filter((game) => game.title.toLowerCase().includes(needle) && matchesLocal(game, filters));
+  const titled = local.filter((game) => looseIncludes(game.title, needle) && matchesLocal(game, filters));
   if (!igdbConfigured()) return pageOf(sortedLocalIds(titled, filters.sort), start);
 
   try {
     const ordered = filtered || filters.sort === "release" || filters.sort === "title";
-    const remote = ordered ? await queryIgdbGames(filteredQuery(query, filters, SEARCH_POOL)) : await searchIgdb(query, SEARCH_POOL);
-    const named = needle.length >= 2 ? remote.filter((game) => (game.name ?? "").toLowerCase().includes(needle)) : remote;
+    const remote = ordered ? await queryIgdbGames(filteredQuery(query, filters, SEARCH_POOL, clauses)) : await searchIgdb(query, SEARCH_POOL);
+    const named = needle.length >= 2 ? remote.filter((game) => looseIncludes(game.name ?? "", needle)) : remote;
     const ids = await upsertIgdbGames(orderRemote(named, filters.sort));
     const seen = new Set(ids);
     const extra = titled
@@ -91,7 +94,7 @@ export async function getGameBySlug(slug: string): Promise<GameDetails | null> {
 
 async function ensureDetails(game: GameRow): Promise<GameDetailRow | null> {
   const existing = await readDetails(game.id);
-  if (existing && existing.detailVersion >= 3 && Date.now() - existing.fetchedAt.getTime() < DETAILS_TTL_MS) {
+  if (existing && existing.detailVersion >= 4 && Date.now() - existing.fetchedAt.getTime() < DETAILS_TTL_MS) {
     return existing;
   }
   if (!igdbConfigured()) return existing;
@@ -156,7 +159,7 @@ async function searchLocal(key: string) {
     .select()
     .from(games)
     .where(
-      sql`similarity(lower(${games.title}), ${key}) > 0.25 OR ${games.title} ILIKE ${pattern} ESCAPE '\\'`,
+      sql`similarity(lower(${games.title}), ${key}) > 0.25 OR ${games.title} ILIKE ${pattern} ESCAPE '\\' OR regexp_replace(lower(${games.title}), '[^a-z0-9а-яіїєґё]+', '', 'g') LIKE ${`%${loose(key)}%`}`,
     )
     .orderBy(
       sql`CASE WHEN lower(${games.title}) LIKE ${pattern} ESCAPE '\\' THEN 0 ELSE 1 END`,
@@ -365,17 +368,41 @@ async function missingIgdbIds(ids: number[]): Promise<number[]> {
 function cacheKey(query: string, filters: SearchFilters): string {
   const base = query.toLowerCase();
   const sort = filters.sort && filters.sort !== "popular" ? filters.sort : "";
+  const credit = [filters.developer ?? "", filters.publisher ?? "", filters.series ?? ""].join("~").toLowerCase();
+  if (credit.replace(/~/g, "")) {
+    return `f9:${base}|${filters.genre ?? ""}|${filters.platform ?? ""}|${filters.year ?? ""}|${credit}|${sort}`;
+  }
   if (!hasFilters(filters)) return sort ? `d5:${base}|${sort}` : `d5:${base}`;
   const core = `f6:${base}|${filters.genre ?? ""}|${filters.platform ?? ""}|${filters.year ?? ""}`;
   return sort ? `${core}|${sort}` : core;
 }
 
 function hasFilters(filters: SearchFilters): boolean {
-  return Boolean(filters.genre || filters.platform || filters.year);
+  return Boolean(filters.genre || filters.platform || filters.year || filters.developer || filters.publisher || filters.series);
 }
 
-function filteredQuery(query: string, filters: SearchFilters, limit = SEARCH_POOL): string {
-  const where = ["game_type = (0,1,2,3,4,8,9,10)", "version_parent = null", "cover != null"];
+async function creditClauses(filters: SearchFilters): Promise<string[] | null> {
+  const clauses: string[] = [];
+  if (filters.developer) {
+    const ids = await matchCompanies(filters.developer);
+    if (ids.length === 0) return null;
+    clauses.push(`involved_companies.company = (${ids.join(",")}) & involved_companies.developer = true`);
+  }
+  if (filters.publisher) {
+    const ids = await matchCompanies(filters.publisher);
+    if (ids.length === 0) return null;
+    clauses.push(`involved_companies.company = (${ids.join(",")}) & involved_companies.publisher = true`);
+  }
+  if (filters.series) {
+    const ids = await matchFranchises(filters.series);
+    if (ids.length === 0) return null;
+    clauses.push(`franchises = (${ids.join(",")})`);
+  }
+  return clauses;
+}
+
+function filteredQuery(query: string, filters: SearchFilters, limit = SEARCH_POOL, extra: string[] = []): string {
+  const where = ["game_type = (0,1,2,3,4,8,9,10)", "version_parent = null", "cover != null", ...extra];
   const genre = filters.genre ? catalogGenre(filters.genre) : null;
   const platform = filters.platform ? catalogPlatform(filters.platform) : null;
   if (genre) where.push(`genres = (${genre.igdbId})`);
@@ -385,10 +412,11 @@ function filteredQuery(query: string, filters: SearchFilters, limit = SEARCH_POO
     const end = Math.floor(Date.UTC(filters.year + 1, 0, 1) / 1000);
     where.push(`first_release_date >= ${start} & first_release_date < ${end}`);
   }
-  const lines = [CARD_FIELDS];
-  const term = query.replace(/["\\*\n\r]/g, "").trim().slice(0, 80);
-  if (term.length >= 2) where.push(`name ~ *"${term}"*`);
-  else where.push("total_rating_count > 40");
+  const lines: string[] = [];
+  const term = query.replace(/["\\*\n\r;]/g, "").trim().slice(0, 80);
+  if (term.length >= 2) lines.push(`search "${term}";`);
+  else if (extra.length === 0) where.push("total_rating_count > 40");
+  lines.push(CARD_FIELDS);
   const sort =
     filters.sort === "release" ? "first_release_date desc" : filters.sort === "title" ? "name asc" : "total_rating_count desc";
   lines.push(`where ${where.join(" & ")};`, `sort ${sort};`, `limit ${limit};`);
@@ -396,6 +424,7 @@ function filteredQuery(query: string, filters: SearchFilters, limit = SEARCH_POO
 }
 
 function matchesLocal(game: GameRow, filters: SearchFilters): boolean {
+  if (filters.developer || filters.publisher || filters.series) return false;
   if (filters.genre) return false;
   if (filters.year && game.releaseDate?.slice(0, 4) !== String(filters.year)) return false;
   const platform = filters.platform ? catalogPlatform(filters.platform) : null;

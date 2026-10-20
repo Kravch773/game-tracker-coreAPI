@@ -116,6 +116,7 @@ export type GameDetails = GameSummary & {
   videos: GameVideo[];
   developers: string[];
   publishers: string[];
+  series: string | null;
   themes: string[];
   ageRatings: string[];
   timeToBeat: TimeToBeat | null;
@@ -192,6 +193,9 @@ export type SearchFilters = {
   platform?: CatalogPlatformId;
   year?: number;
   sort?: SearchSort;
+  developer?: string;
+  publisher?: string;
+  series?: string;
 };
 
 export type ActivityEvent = {

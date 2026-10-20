@@ -115,6 +115,7 @@ export type MappedDetails = {
   videos: StoredVideo[];
   developers: string[];
   publishers: string[];
+  series: string | null;
   themes: string[];
   ageRatings: string[];
   timeToBeat: StoredTimeToBeat | null;
@@ -167,12 +168,13 @@ export function mapIgdbDetails(game: IgdbGameDetail | null, beat: IgdbTimeToBeat
     videos,
     developers: companyNames(game, "developer"),
     publishers: companyNames(game, "publisher"),
+    series: game?.franchises?.find((item) => item.name?.trim())?.name?.trim() || null,
     themes: uniqueNames(game?.themes),
     ageRatings: ageLabels(game),
     timeToBeat: mapBeat(beat),
     similarIgdbIds: (game?.similar_games ?? []).filter((id) => Number.isInteger(id)).slice(0, 8),
     ...ukrainianSupport(game),
-    detailVersion: 3,
+    detailVersion: 4,
   };
 }
 

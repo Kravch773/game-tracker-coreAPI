@@ -3,7 +3,7 @@ name: Keep API awake
 on:
   schedule:
     # Render free tier sleeps after 15 minutes without a request.
-    - cron: "*/10 * * * *"
+    - cron: "2-59/5 * * * *"
   workflow_dispatch:
 
 jobs:
