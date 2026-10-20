@@ -3,6 +3,7 @@ import type { IgdbGame } from "./map.js";
 
 const TOKEN_URL = "https://id.twitch.tv/oauth2/token";
 const GAMES_URL = "https://api.igdb.com/v4/games";
+const COMPANIES_URL = "https://api.igdb.com/v4/companies";
 const TIME_URL = "https://api.igdb.com/v4/game_time_to_beats";
 
 let tokenCache: { value: string; expiresAt: number } | null = null;
@@ -33,6 +34,27 @@ export async function searchIgdb(query: string, limit = 20): Promise<IgdbGame[]>
 
 export async function queryIgdbGames(body: string): Promise<IgdbGame[]> {
   return gamesFrom(await postGames(body, "IGDB query"));
+}
+
+export async function findCompanyIds(name: string): Promise<number[]> {
+  const term = name.replace(/["\\*\n\r;]/g, "").trim().slice(0, 120);
+  if (term.length < 2) return [];
+  const payload = await postIgdb(
+    COMPANIES_URL,
+    ["fields name;", `where name ~ *"${term}"*;`, "limit 8;"].join("\n"),
+    "IGDB companies",
+  );
+  if (!Array.isArray(payload)) return [];
+  const wanted = term.toLowerCase();
+  const ids: number[] = [];
+  for (const row of payload) {
+    if (!row || typeof row !== "object") continue;
+    const company = row as { id?: unknown; name?: unknown };
+    if (typeof company.id === "number" && typeof company.name === "string" && company.name.toLowerCase() === wanted) {
+      ids.push(company.id);
+    }
+  }
+  return ids.slice(0, 4);
 }
 
 export type IgdbGameDetail = {

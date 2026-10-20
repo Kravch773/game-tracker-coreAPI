@@ -14,6 +14,7 @@ import {
 } from "./auth/service.js";
 import { clearSessionCookie, sessionCookie, signSession } from "./auth/session.js";
 import { browseCatalog } from "./games/browse.js";
+import { companyGames } from "./games/companies.js";
 import { releaseCalendar } from "./games/calendar.js";
 import { backlogInMonth, favoritesForUser, listForUser, loadHomeCollections, upcomingFromBacklog } from "./games/collections.js";
 import { sitemapPage } from "./games/sitemap.js";
@@ -62,6 +63,17 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       user ? upcomingFromBacklog(user.id) : Promise.resolve(null),
     ]);
     return { collections, backlog, playing, favorites, upcomingBacklog };
+  });
+
+  app.get("/companies/:role/:name", async (request, reply) => {
+    const parsed = z
+      .object({
+        role: z.enum(["developer", "publisher"]),
+        name: z.string().trim().min(1).max(120),
+      })
+      .safeParse(request.params);
+    if (!parsed.success) return reply.code(400).send({ error: t("api.badPayload") });
+    return { games: await companyGames(parsed.data.role, parsed.data.name) };
   });
 
   app.get("/browse/:kind/:id", async (request, reply) => {
