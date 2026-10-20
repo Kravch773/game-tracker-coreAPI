@@ -122,7 +122,12 @@ export type GameDetails = GameSummary & {
   similar: GameSummary[];
   community: CommunityScore;
   reviews: CommunityReview[];
+  origins: GameOrigin[];
+  ukrainianText: boolean;
+  ukrainianAudio: boolean;
 };
+
+export type GameOrigin = "ua" | "ru";
 
 export type SitemapPayload = {
   page: number;

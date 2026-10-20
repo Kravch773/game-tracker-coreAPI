@@ -13,6 +13,7 @@ import { fetchIgdbGame, fetchTimeToBeat, queryIgdbGames, searchIgdb } from "../i
 import { communityForGame } from "./community.js";
 import { mapIgdbDetails, mapIgdbGame, type MappedGame } from "../igdb/map.js";
 import { scheduleMetacriticEnrich } from "../rawg/enrich.js";
+import { originsFor } from "../steam/curators.js";
 import { toDetails, toSummary } from "./present.js";
 
 const PAGE_SIZE = 20;
@@ -70,16 +71,18 @@ export async function getGameBySlug(slug: string): Promise<GameDetails | null> {
   const links = await db.select().from(gameLinks).where(eq(gameLinks.gameId, game.id));
   const details = await ensureDetails(game);
   scheduleMetacriticEnrich(game, links);
-  const [similar, community] = await Promise.all([
+  const steamIds = links.flatMap((link) => (link.kind === "steam" && link.externalId ? [link.externalId] : []));
+  const [similar, community, origins] = await Promise.all([
     similarGames(details?.similarIgdbIds ?? []),
     communityForGame(game.id),
+    originsFor(steamIds),
   ]);
-  return { ...toDetails(game, links, details), similar, ...community };
+  return { ...toDetails(game, links, details), similar, ...community, origins };
 }
 
 async function ensureDetails(game: GameRow): Promise<GameDetailRow | null> {
   const existing = await readDetails(game.id);
-  if (existing && existing.detailVersion >= 2 && Date.now() - existing.fetchedAt.getTime() < DETAILS_TTL_MS) {
+  if (existing && existing.detailVersion >= 3 && Date.now() - existing.fetchedAt.getTime() < DETAILS_TTL_MS) {
     return existing;
   }
   if (!igdbConfigured()) return existing;

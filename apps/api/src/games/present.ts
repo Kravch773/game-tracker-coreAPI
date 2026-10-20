@@ -55,6 +55,9 @@ export function toDetails(
     similar: [],
     community: { average: null, count: 0 },
     reviews: [],
+    origins: [],
+    ukrainianText: details?.ukrainianText ?? false,
+    ukrainianAudio: details?.ukrainianAudio ?? false,
   };
 }
 

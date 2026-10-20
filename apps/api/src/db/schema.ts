@@ -1,4 +1,5 @@
 import {
+  boolean,
   date,
   integer,
   numeric,
@@ -59,6 +60,8 @@ export const gameDetails = pgTable("game_details", {
   ageRatings: jsonb("age_ratings").$type<string[]>().notNull().default([]),
   timeToBeat: jsonb("time_to_beat").$type<StoredTimeToBeat | null>(),
   similarIgdbIds: jsonb("similar_igdb_ids").$type<number[]>().notNull().default([]),
+  ukrainianText: boolean("ukrainian_text").notNull().default(false),
+  ukrainianAudio: boolean("ukrainian_audio").notNull().default(false),
   detailVersion: integer("detail_version").notNull().default(1),
   fetchedAt: timestamp("fetched_at", { withTimezone: true }).notNull(),
 });
@@ -82,6 +85,20 @@ export const gameTrailers = pgTable("game_trailers", {
     .references(() => games.id, { onDelete: "cascade" }),
   rawgId: integer("rawg_id"),
   trailers: jsonb("trailers").$type<StoredTrailer[]>().notNull().default([]),
+  fetchedAt: timestamp("fetched_at", { withTimezone: true }).notNull(),
+});
+
+export const curatorApps = pgTable(
+  "curator_apps",
+  {
+    list: text("list").notNull(),
+    appId: text("app_id").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.list, table.appId] })],
+);
+
+export const curatorMeta = pgTable("curator_meta", {
+  id: text("id").primaryKey(),
   fetchedAt: timestamp("fetched_at", { withTimezone: true }).notNull(),
 });
 

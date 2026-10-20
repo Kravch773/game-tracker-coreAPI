@@ -7,6 +7,7 @@ import { sql } from "./db/client.js";
 import { migrate } from "./db/migrate.js";
 import { env } from "./env.js";
 import { registerRoutes } from "./routes.js";
+import { startCuratorRefresh } from "./steam/curators.js";
 
 const requestLocale = new AsyncLocalStorage<Locale>();
 bindLocale(() => requestLocale.getStore());
@@ -29,6 +30,7 @@ await registerRoutes(app);
 
 const address = await app.listen({ port: env.port, host: "0.0.0.0" });
 app.log.info(`API listening on ${address}`);
+startCuratorRefresh();
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.on(signal, () => {

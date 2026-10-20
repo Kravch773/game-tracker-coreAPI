@@ -119,6 +119,8 @@ export type MappedDetails = {
   ageRatings: string[];
   timeToBeat: StoredTimeToBeat | null;
   similarIgdbIds: number[];
+  ukrainianText: boolean;
+  ukrainianAudio: boolean;
   detailVersion: number;
 };
 
@@ -169,8 +171,21 @@ export function mapIgdbDetails(game: IgdbGameDetail | null, beat: IgdbTimeToBeat
     ageRatings: ageLabels(game),
     timeToBeat: mapBeat(beat),
     similarIgdbIds: (game?.similar_games ?? []).filter((id) => Number.isInteger(id)).slice(0, 8),
-    detailVersion: 2,
+    ...ukrainianSupport(game),
+    detailVersion: 3,
   };
+}
+
+function ukrainianSupport(game: IgdbGameDetail | null): { ukrainianText: boolean; ukrainianAudio: boolean } {
+  let ukrainianText = false;
+  let ukrainianAudio = false;
+  for (const support of game?.language_supports ?? []) {
+    const locale = support.language?.locale?.toLowerCase() ?? "";
+    if (!locale.startsWith("uk")) continue;
+    if (support.language_support_type === 1) ukrainianAudio = true;
+    if (support.language_support_type === 2 || support.language_support_type === 3) ukrainianText = true;
+  }
+  return { ukrainianText, ukrainianAudio };
 }
 
 function companyNames(game: IgdbGameDetail | null, role: "developer" | "publisher"): string[] {
