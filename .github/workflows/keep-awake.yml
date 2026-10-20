@@ -1,0 +1,15 @@
+name: Keep API awake
+
+on:
+  schedule:
+    # Render free tier sleeps after 15 minutes without a request.
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+jobs:
+  health:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Ping /health
+        run: curl --fail --show-error --silent --retry 2 --retry-delay 20 --retry-all-errors --connect-timeout 20 --max-time 120 "https://game-tracker-coreAPI.onrender.com/health"
