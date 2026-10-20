@@ -6,6 +6,7 @@ import { readCookie } from "./auth/session.js";
 import { sql } from "./db/client.js";
 import { migrate } from "./db/migrate.js";
 import { env } from "./env.js";
+import { startKeepAwake } from "./keep-awake.js";
 import { registerRoutes } from "./routes.js";
 import { startCuratorRefresh } from "./steam/curators.js";
 
@@ -31,6 +32,7 @@ await registerRoutes(app);
 const address = await app.listen({ port: env.port, host: "0.0.0.0" });
 app.log.info(`API listening on ${address}`);
 startCuratorRefresh();
+startKeepAwake(app.log);
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.on(signal, () => {
