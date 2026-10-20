@@ -185,10 +185,13 @@ export type ReleaseCalendar = {
   mine: GameSummary[];
 };
 
+export type SearchSort = "popular" | "release" | "title";
+
 export type SearchFilters = {
   genre?: SearchGenreId;
   platform?: CatalogPlatformId;
   year?: number;
+  sort?: SearchSort;
 };
 
 export type ActivityEvent = {

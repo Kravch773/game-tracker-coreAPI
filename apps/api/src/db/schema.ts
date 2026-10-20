@@ -97,6 +97,15 @@ export const curatorApps = pgTable(
   (table) => [primaryKey({ columns: [table.list, table.appId] })],
 );
 
+export const originStudios = pgTable(
+  "origin_studios",
+  {
+    list: text("list").notNull(),
+    name: text("name").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.list, table.name] })],
+);
+
 export const curatorMeta = pgTable("curator_meta", {
   id: text("id").primaryKey(),
   fetchedAt: timestamp("fetched_at", { withTimezone: true }).notNull(),

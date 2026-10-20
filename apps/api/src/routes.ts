@@ -40,7 +40,8 @@ const searchQuery = z.object({
   platform: z.enum(CATALOG_PLATFORMS.map((item) => item.id) as [string, ...string[]]).optional(),
   year: z.coerce.number().int().min(1970).max(2035).optional(),
   offset: z.coerce.number().int().min(0).max(500).optional(),
-  origin: z.enum(["ua"]).optional(),
+  origin: z.enum(["ua", "ru"]).optional(),
+  sort: z.enum(["popular", "release", "title"]).optional(),
 });
 
 const slugParams = z.object({
@@ -121,8 +122,10 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       genre: parsed.data.genre as SearchFilters["genre"],
       platform: parsed.data.platform as SearchFilters["platform"],
       year: parsed.data.year,
+      sort: parsed.data.sort,
     };
-    if (!query.trim() && !filters.genre && !filters.platform && !filters.year && parsed.data.origin !== "ua") {
+    const sortedBrowse = parsed.data.sort === "release" || parsed.data.sort === "title";
+    if (!query.trim() && !filters.genre && !filters.platform && !filters.year && parsed.data.origin !== "ua" && parsed.data.origin !== "ru" && !sortedBrowse) {
       return reply.code(400).send({ error: t("api.missingQuery") });
     }
 

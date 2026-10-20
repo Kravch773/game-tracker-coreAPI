@@ -13,7 +13,7 @@ import { fetchIgdbGame, fetchTimeToBeat, queryIgdbGames, searchIgdb } from "../i
 import { communityForGame } from "./community.js";
 import { mapIgdbDetails, mapIgdbGame, type MappedGame } from "../igdb/map.js";
 import { scheduleMetacriticEnrich } from "../rawg/enrich.js";
-import { ukrainianGames } from "./origin.js";
+import { developedByUkrainianStudio, russianGames, ukrainianGames } from "./origin.js";
 import { originsFor } from "../steam/curators.js";
 import { toDetails, toSummary } from "./present.js";
 
@@ -31,14 +31,16 @@ export async function searchGames(
   rawQuery: string,
   filters: SearchFilters = {},
   offset = 0,
-  origin?: "ua",
+  origin?: "ua" | "ru",
 ): Promise<{ games: GameSummary[]; hasMore: boolean }> {
-  if (origin === "ua") return ukrainianGames(offset);
+  if (origin === "ua") return ukrainianGames(offset, filters, rawQuery);
+  if (origin === "ru") return russianGames(offset, filters, rawQuery);
   const query = rawQuery.replace(/\s+/g, " ").trim();
   const key = cacheKey(query, filters);
   const filtered = hasFilters(filters);
   const start = offset > 0 ? offset : 0;
-  if (query.length < 2 && !filtered) return { games: [], hasMore: false };
+  const sortedBrowse = filters.sort === "release" || filters.sort === "title";
+  if (query.length < 2 && !filtered && !sortedBrowse) return { games: [], hasMore: false };
 
   const cachedIds = await readFreshCache(key);
   if (cachedIds) return pageOf(cachedIds, start);
@@ -46,12 +48,13 @@ export async function searchGames(
   const needle = query.toLowerCase();
   const local = needle.length >= 2 ? await searchLocal(needle) : [];
   const titled = local.filter((game) => game.title.toLowerCase().includes(needle) && matchesLocal(game, filters));
-  if (!igdbConfigured()) return pageOf(sortedLocalIds(titled), start);
+  if (!igdbConfigured()) return pageOf(sortedLocalIds(titled, filters.sort), start);
 
   try {
-    const remote = filtered ? await queryIgdbGames(filteredQuery(query, filters, SEARCH_POOL)) : await searchIgdb(query, SEARCH_POOL);
+    const ordered = filtered || filters.sort === "release" || filters.sort === "title";
+    const remote = ordered ? await queryIgdbGames(filteredQuery(query, filters, SEARCH_POOL)) : await searchIgdb(query, SEARCH_POOL);
     const named = needle.length >= 2 ? remote.filter((game) => (game.name ?? "").toLowerCase().includes(needle)) : remote;
-    const ids = await upsertIgdbGames(rankRemote(named));
+    const ids = await upsertIgdbGames(orderRemote(named, filters.sort));
     const seen = new Set(ids);
     const extra = titled
       .filter((game) => !seen.has(game.id))
@@ -62,7 +65,7 @@ export async function searchGames(
     return pageOf(result, start);
   } catch (error) {
     console.error("IGDB search failed", error);
-    return pageOf(sortedLocalIds(titled), start);
+    return pageOf(sortedLocalIds(titled, filters.sort), start);
   }
 }
 
@@ -75,11 +78,14 @@ export async function getGameBySlug(slug: string): Promise<GameDetails | null> {
   const details = await ensureDetails(game);
   scheduleMetacriticEnrich(game, links);
   const steamIds = links.flatMap((link) => (link.kind === "steam" && link.externalId ? [link.externalId] : []));
-  const [similar, community, origins] = await Promise.all([
+  const developers = details?.developers ?? [];
+  const [similar, community, origins, sameStudio] = await Promise.all([
     similarGames(details?.similarIgdbIds ?? []),
     communityForGame(game.id),
     originsFor(steamIds),
+    developedByUkrainianStudio(Array.isArray(developers) ? developers.filter((name): name is string => typeof name === "string") : []),
   ]);
+  if (sameStudio && !origins.includes("ua")) origins.push("ua");
   return { ...toDetails(game, links, details), similar, ...community, origins };
 }
 
@@ -166,12 +172,31 @@ async function pageOf(ids: string[], start: number): Promise<{ games: GameSummar
   };
 }
 
-function sortedLocalIds(rows: GameRow[]): string[] {
-  return [...rows].sort(byReleaseDesc).map((game) => game.id);
+function sortedLocalIds(rows: GameRow[], sort?: SearchFilters["sort"]): string[] {
+  const copy = [...rows];
+  if (sort === "title") {
+    copy.sort((a, b) => a.title.localeCompare(b.title));
+    return copy.map((game) => game.id);
+  }
+  if (sort === "popular") return copy.map((game) => game.id);
+  return copy.sort(byReleaseDesc).map((game) => game.id);
 }
 
 function byReleaseDesc(a: { releaseDate: string | null }, b: { releaseDate: string | null }): number {
   return (b.releaseDate ?? "").localeCompare(a.releaseDate ?? "");
+}
+
+function orderRemote(
+  remote: Parameters<typeof mapIgdbGame>[0][],
+  sort?: SearchFilters["sort"],
+): Parameters<typeof mapIgdbGame>[0][] {
+  if (sort === "release") {
+    return [...remote].sort((a, b) => (b.first_release_date ?? 0) - (a.first_release_date ?? 0));
+  }
+  if (sort === "title") {
+    return [...remote].sort((a, b) => (a.name ?? "").localeCompare(b.name ?? ""));
+  }
+  return rankRemote(remote);
 }
 
 function rankRemote(remote: Parameters<typeof mapIgdbGame>[0][]): Parameters<typeof mapIgdbGame>[0][] {
@@ -339,8 +364,10 @@ async function missingIgdbIds(ids: number[]): Promise<number[]> {
 
 function cacheKey(query: string, filters: SearchFilters): string {
   const base = query.toLowerCase();
-  if (!hasFilters(filters)) return `d5:${base}`;
-  return `f6:${base}|${filters.genre ?? ""}|${filters.platform ?? ""}|${filters.year ?? ""}`;
+  const sort = filters.sort && filters.sort !== "popular" ? filters.sort : "";
+  if (!hasFilters(filters)) return sort ? `d5:${base}|${sort}` : `d5:${base}`;
+  const core = `f6:${base}|${filters.genre ?? ""}|${filters.platform ?? ""}|${filters.year ?? ""}`;
+  return sort ? `${core}|${sort}` : core;
 }
 
 function hasFilters(filters: SearchFilters): boolean {
@@ -362,7 +389,9 @@ function filteredQuery(query: string, filters: SearchFilters, limit = SEARCH_POO
   const term = query.replace(/["\\*\n\r]/g, "").trim().slice(0, 80);
   if (term.length >= 2) where.push(`name ~ *"${term}"*`);
   else where.push("total_rating_count > 40");
-  lines.push(`where ${where.join(" & ")};`, "sort total_rating_count desc;", `limit ${limit};`);
+  const sort =
+    filters.sort === "release" ? "first_release_date desc" : filters.sort === "title" ? "name asc" : "total_rating_count desc";
+  lines.push(`where ${where.join(" & ")};`, `sort ${sort};`, `limit ${limit};`);
   return lines.join("\n");
 }
 
