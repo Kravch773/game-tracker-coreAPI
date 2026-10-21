@@ -10,30 +10,34 @@ import { storeIgdbGames } from "./service.js";
 import { refreshCurators } from "../steam/curators.js";
 
 const CACHE_KEY = "origin:v3:ua";
-const RU_CACHE_KEY = "origin:v2:ru";
+const RU_CACHE_KEY = "origin:v3:ru";
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const PAGE_SIZE = 20;
 
 let pending: Promise<string[]> | null = null;
 let pendingRu: Promise<string[]> | null = null;
-const studioFill = new Map<"ua" | "ru", Promise<void>>();
+const studioFill = new Map<string, Promise<void>>();
 
 export async function developedByUkrainianStudio(names: string[]): Promise<boolean> {
-  return developedByStudio(names, "ua");
+  return creditedCompany(names, "ua", "developer");
 }
 
 export async function developedByRussianStudio(names: string[]): Promise<boolean> {
-  return developedByStudio(names, "ru");
+  return creditedCompany(names, "ru", "developer");
 }
 
-async function developedByStudio(names: string[], list: "ua" | "ru"): Promise<boolean> {
+export async function publishedByRussianPublisher(names: string[]): Promise<boolean> {
+  return creditedCompany(names, "ru", "publisher");
+}
+
+async function creditedCompany(names: string[], list: "ua" | "ru", role: "developer" | "publisher"): Promise<boolean> {
   const wanted = [...new Set(names.map((name) => name.trim().toLowerCase()).filter((name) => name.length > 1))];
   if (wanted.length === 0) return false;
-  await ensureStudioNames(list);
+  await ensureStudioNames(list, role);
   const rows = await db
     .select({ name: originStudios.name })
     .from(originStudios)
-    .where(and(eq(originStudios.list, list), inArray(originStudios.name, wanted)))
+    .where(and(eq(originStudios.list, list), eq(originStudios.role, role), inArray(originStudios.name, wanted)))
     .limit(1);
   return rows.length > 0;
 }
@@ -110,7 +114,20 @@ async function russianIds(): Promise<string[]> {
       pendingRu = null;
     });
   }
+  const ready = row?.gameIds.length ? row.gameIds : await previousRussianIds();
+  if (ready.length > 0) {
+    void pendingRu.catch((error) => console.error("Russian catalog refresh failed", error));
+    return ready;
+  }
   return pendingRu;
+}
+
+async function previousRussianIds(): Promise<string[]> {
+  for (const key of ["origin:v2:ru", "origin:v1:ru"]) {
+    const rows = await db.select({ gameIds: collectionCache.gameIds }).from(collectionCache).where(eq(collectionCache.key, key)).limit(1);
+    if (rows[0]?.gameIds.length) return rows[0].gameIds;
+  }
+  return [];
 }
 
 async function refresh(fallback: string[]): Promise<string[]> {
@@ -210,6 +227,22 @@ async function refreshRussian(fallback: string[]): Promise<string[]> {
       console.error("Russian studio games failed", error);
     }
   }
+  let publishers: number[] = [];
+  try {
+    publishers = await saveStudioNames(matched.map((row) => row.igdbId), "ru", "publisher");
+  } catch (error) {
+    console.error("Russian publisher names failed", error);
+  }
+  if (publishers.length > 0 && igdbConfigured()) {
+    try {
+      const remote = await fetchGamesByDevelopers(publishers, "publisher");
+      for (let index = 0; index < remote.length; index += 30) {
+        siblingIds.push(...(await storeIgdbGames(remote.slice(index, index + 30))));
+      }
+    } catch (error) {
+      console.error("Russian publisher games failed", error);
+    }
+  }
 
   const matchedIds = new Set(matched.map((row) => row.id));
   const extras = [...storedIds, ...siblingIds].filter((id) => !matchedIds.has(id));
@@ -229,34 +262,43 @@ async function refreshRussian(fallback: string[]): Promise<string[]> {
   return ids;
 }
 
-async function ensureStudioNames(list: "ua" | "ru"): Promise<void> {
-  const existing = await db.select({ name: originStudios.name }).from(originStudios).where(eq(originStudios.list, list)).limit(1);
+async function ensureStudioNames(list: "ua" | "ru", role: "developer" | "publisher"): Promise<void> {
+  const existing = await db
+    .select({ name: originStudios.name })
+    .from(originStudios)
+    .where(and(eq(originStudios.list, list), eq(originStudios.role, role)))
+    .limit(1);
   if (existing.length > 0) return;
-  let pendingFill = studioFill.get(list);
+  const key = `${list}:${role}`;
+  let pendingFill = studioFill.get(key);
   if (!pendingFill) {
-    pendingFill = fillStudioNames(list).finally(() => {
-      studioFill.delete(list);
+    pendingFill = fillStudioNames(list, role).finally(() => {
+      studioFill.delete(key);
     });
-    studioFill.set(list, pendingFill);
+    studioFill.set(key, pendingFill);
   }
   await pendingFill;
 }
 
-async function fillStudioNames(list: "ua" | "ru"): Promise<void> {
+async function fillStudioNames(list: "ua" | "ru", role: "developer" | "publisher"): Promise<void> {
   const appIds = await steamAppIds(list);
   const linked = await linkedIds(appIds);
-  await saveStudioNames(linked.map((row) => row.igdbId), list);
+  await saveStudioNames(linked.map((row) => row.igdbId), list, role);
 }
 
-async function saveStudioNames(igdbIds: number[], list: "ua" | "ru"): Promise<number[]> {
+async function saveStudioNames(
+  igdbIds: number[],
+  list: "ua" | "ru",
+  role: "developer" | "publisher" = "developer",
+): Promise<number[]> {
   if (!igdbConfigured() || igdbIds.length === 0) return [];
-  const companies = await developerCompanies([...new Set(igdbIds)]);
+  const companies = await developerCompanies([...new Set(igdbIds)], role);
   const names = [...new Set(companies.map((company) => company.name.trim().toLowerCase()).filter((name) => name.length > 1))];
   if (names.length === 0) return companies.map((company) => company.id);
   await db.transaction(async (tx) => {
-    await tx.delete(originStudios).where(eq(originStudios.list, list));
+    await tx.delete(originStudios).where(and(eq(originStudios.list, list), eq(originStudios.role, role)));
     for (let index = 0; index < names.length; index += 400) {
-      await tx.insert(originStudios).values(names.slice(index, index + 400).map((name) => ({ list, name })));
+      await tx.insert(originStudios).values(names.slice(index, index + 400).map((name) => ({ list, role, name })));
     }
   });
   return companies.map((company) => company.id);

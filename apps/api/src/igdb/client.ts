@@ -65,24 +65,27 @@ export async function igdbIdsForSteamApps(appIds: string[]): Promise<number[]> {
   return [...ids];
 }
 
-export async function developerCompanies(igdbIds: number[]): Promise<{ id: number; name: string }[]> {
+export async function developerCompanies(
+  igdbIds: number[],
+  role: "developer" | "publisher" = "developer",
+): Promise<{ id: number; name: string }[]> {
   const found = new Map<number, string>();
   for (let index = 0; index < igdbIds.length; index += 40) {
     const chunk = igdbIds.slice(index, index + 40).filter((id) => Number.isInteger(id)).join(",");
     if (!chunk) continue;
     const payload = await postGames(
       [
-        "fields involved_companies.developer,involved_companies.company.id,involved_companies.company.name;",
+        "fields involved_companies.developer,involved_companies.publisher,involved_companies.company.id,involved_companies.company.name;",
         `where id = (${chunk});`,
         "limit 40;",
       ].join("\n"),
-      "IGDB developers",
+      "IGDB companies",
     );
     if (!Array.isArray(payload)) continue;
     for (const row of payload) {
       if (!row || typeof row !== "object" || !("involved_companies" in row) || !Array.isArray(row.involved_companies)) continue;
       for (const company of row.involved_companies) {
-        if (!company || typeof company !== "object" || !("developer" in company) || company.developer !== true) continue;
+        if (!company || typeof company !== "object" || company[role] !== true) continue;
         const record = "company" in company ? company.company : null;
         if (!record || typeof record !== "object") continue;
         const id = "id" in record && typeof record.id === "number" ? record.id : null;
@@ -95,7 +98,10 @@ export async function developerCompanies(igdbIds: number[]): Promise<{ id: numbe
   return [...found.entries()].map(([id, name]) => ({ id, name }));
 }
 
-export async function fetchGamesByDevelopers(companyIds: number[]): Promise<IgdbGame[]> {
+export async function fetchGamesByDevelopers(
+  companyIds: number[],
+  role: "developer" | "publisher" = "developer",
+): Promise<IgdbGame[]> {
   const byId = new Map<number, IgdbGame>();
   const playable = "game_type = (0,8,9) & version_parent = null";
   for (let index = 0; index < companyIds.length; index += 6) {
@@ -105,11 +111,11 @@ export async function fetchGamesByDevelopers(companyIds: number[]): Promise<Igdb
       await postGames(
         [
           SEARCH_FIELDS,
-          `where involved_companies.company = (${chunk}) & involved_companies.developer = true & ${playable};`,
+          `where involved_companies.company = (${chunk}) & involved_companies.${role} = true & ${playable};`,
           "sort total_rating_count desc;",
           "limit 200;",
         ].join("\n"),
-        "IGDB games by developer",
+        "IGDB games by company",
       ),
     );
     for (const game of games) {

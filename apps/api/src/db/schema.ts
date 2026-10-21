@@ -102,9 +102,10 @@ export const originStudios = pgTable(
   "origin_studios",
   {
     list: text("list").notNull(),
+    role: text("role").notNull().default("developer"),
     name: text("name").notNull(),
   },
-  (table) => [primaryKey({ columns: [table.list, table.name] })],
+  (table) => [primaryKey({ columns: [table.list, table.role, table.name] })],
 );
 
 export const curatorMeta = pgTable("curator_meta", {
