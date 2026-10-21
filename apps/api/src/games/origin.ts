@@ -1,16 +1,19 @@
+import { readFileSync } from "node:fs";
 import { catalogPlatform, type GameSummary, type SearchFilters } from "@gametracker/shared";
 import { and, eq, inArray } from "drizzle-orm";
 import { db } from "../db/client.js";
-import { collectionCache, curatorApps, gameLinks, games, originStudios } from "../db/schema.js";
+import { collectionCache, curatorApps, curatorMeta, gameLinks, games, originStudios } from "../db/schema.js";
 import { igdbConfigured } from "../env.js";
-import { developerCompanies, fetchGamesByDevelopers, fetchIgdbGamesByIds, igdbIdsForSteamApps, queryIgdbGames } from "../igdb/client.js";
+import { companyIdsByNames, developerCompanies, fetchGamesByDevelopers, fetchIgdbGamesByIds, igdbIdsForSteamApps, queryIgdbGames } from "../igdb/client.js";
 import { toSummary } from "./present.js";
 import { looseIncludes } from "./text.js";
 import { storeIgdbGames } from "./service.js";
 import { refreshCurators } from "../steam/curators.js";
 
 const CACHE_KEY = "origin:v3:ua";
-const RU_CACHE_KEY = "origin:v3:ru";
+const RU_CACHE_KEY = "origin:v4:ru";
+const RU_NAMES_KEY = "ru-plugin-v1";
+const RU_COMPANIES = JSON.parse(readFileSync(new URL("./data/ru-companies.json", import.meta.url), "utf8")) as string[];
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const PAGE_SIZE = 20;
 
@@ -30,8 +33,17 @@ export async function publishedByRussianPublisher(names: string[]): Promise<bool
   return creditedCompany(names, "ru", "publisher");
 }
 
+const COMPANY_SUFFIX = /(?:\s+(?:inc\.?|ltd\.?|llc|gmbh|interactive|entertainment|games|game|studios?|software|media|publishing|productions?|pty))+$/i;
+
+function companyKeys(name: string): string[] {
+  const lower = name.trim().toLowerCase();
+  if (lower.length < 2) return [];
+  const stripped = lower.replace(COMPANY_SUFFIX, "").trim();
+  return stripped.length >= 4 && stripped !== lower ? [lower, stripped] : [lower];
+}
+
 async function creditedCompany(names: string[], list: "ua" | "ru", role: "developer" | "publisher"): Promise<boolean> {
-  const wanted = [...new Set(names.map((name) => name.trim().toLowerCase()).filter((name) => name.length > 1))];
+  const wanted = [...new Set(names.flatMap(companyKeys))];
   if (wanted.length === 0) return false;
   await ensureStudioNames(list, role);
   const rows = await db
@@ -114,20 +126,11 @@ async function russianIds(): Promise<string[]> {
       pendingRu = null;
     });
   }
-  const ready = row?.gameIds.length ? row.gameIds : await previousRussianIds();
-  if (ready.length > 0) {
+  if (row?.gameIds.length) {
     void pendingRu.catch((error) => console.error("Russian catalog refresh failed", error));
-    return ready;
+    return row.gameIds;
   }
   return pendingRu;
-}
-
-async function previousRussianIds(): Promise<string[]> {
-  for (const key of ["origin:v2:ru", "origin:v1:ru"]) {
-    const rows = await db.select({ gameIds: collectionCache.gameIds }).from(collectionCache).where(eq(collectionCache.key, key)).limit(1);
-    if (rows[0]?.gameIds.length) return rows[0].gameIds;
-  }
-  return [];
 }
 
 async function refresh(fallback: string[]): Promise<string[]> {
@@ -188,81 +191,66 @@ async function refresh(fallback: string[]): Promise<string[]> {
 }
 
 async function refreshRussian(fallback: string[]): Promise<string[]> {
-  const appIds = await steamAppIds("ru");
-  if (appIds.length === 0) return fallback;
-
-  const linked = await linkedIds(appIds);
-  const known = new Set(linked.flatMap((row) => (row.appId ? [row.appId] : [])));
-  const missing = appIds.filter((id) => !known.has(id));
-  let storedIds: string[] = [];
-
-  if (missing.length > 0 && igdbConfigured()) {
-    try {
-      const remoteIds = await igdbIdsForSteamApps(missing);
-      const remote = await fetchIgdbGamesByIds(remoteIds);
-      for (let index = 0; index < remote.length; index += 30) {
-        storedIds.push(...(await storeIgdbGames(remote.slice(index, index + 30))));
-      }
-    } catch (error) {
-      console.error("Russian game import failed", error);
-      if (fallback.length > 0) return fallback;
-    }
-  }
-
-  const matched = await linkedIds(appIds);
-  let studios: number[] = [];
+  const names = await seedRussianNames();
+  if (!igdbConfigured()) return fallback;
   try {
-    studios = await saveStudioNames(matched.map((row) => row.igdbId), "ru");
-  } catch (error) {
-    console.error("Russian studio names failed", error);
-  }
-  let siblingIds: string[] = [];
-  if (studios.length > 0 && igdbConfigured()) {
-    try {
-      const remote = await fetchGamesByDevelopers(studios);
-      for (let index = 0; index < remote.length; index += 30) {
-        siblingIds.push(...(await storeIgdbGames(remote.slice(index, index + 30))));
-      }
-    } catch (error) {
-      console.error("Russian studio games failed", error);
+    const companyIds = await companyIdsByNames(names);
+    const remote = await fetchGamesByDevelopers(companyIds, "any");
+    const storedIds: string[] = [];
+    for (let index = 0; index < remote.length; index += 30) {
+      storedIds.push(...(await storeIgdbGames(remote.slice(index, index + 30))));
     }
-  }
-  let publishers: number[] = [];
-  try {
-    publishers = await saveStudioNames(matched.map((row) => row.igdbId), "ru", "publisher");
+    const rows =
+      storedIds.length === 0
+        ? []
+        : await db
+            .select({ id: games.id, igdbId: games.igdbId, releaseDate: games.releaseDate })
+            .from(games)
+            .where(inArray(games.id, storedIds));
+    const ids = await uniqueByPopularity(rows);
+    if (ids.length === 0) return fallback;
+    await db
+      .insert(collectionCache)
+      .values({ key: RU_CACHE_KEY, gameIds: ids, fetchedAt: new Date() })
+      .onConflictDoUpdate({
+        target: collectionCache.key,
+        set: { gameIds: ids, fetchedAt: new Date() },
+      });
+    return ids;
   } catch (error) {
-    console.error("Russian publisher names failed", error);
+    console.error("Russian catalog refresh failed", error);
+    return fallback;
   }
-  if (publishers.length > 0 && igdbConfigured()) {
-    try {
-      const remote = await fetchGamesByDevelopers(publishers, "publisher");
-      for (let index = 0; index < remote.length; index += 30) {
-        siblingIds.push(...(await storeIgdbGames(remote.slice(index, index + 30))));
-      }
-    } catch (error) {
-      console.error("Russian publisher games failed", error);
-    }
-  }
+}
 
-  const matchedIds = new Set(matched.map((row) => row.id));
-  const extras = [...storedIds, ...siblingIds].filter((id) => !matchedIds.has(id));
-  const extraRows =
-    extras.length === 0
-      ? []
-      : await db.select({ id: games.id, igdbId: games.igdbId, releaseDate: games.releaseDate }).from(games).where(inArray(games.id, extras));
-  const ids = await uniqueByPopularity([...matched, ...extraRows]);
-  if (ids.length === 0) return fallback;
-  await db
-    .insert(collectionCache)
-    .values({ key: RU_CACHE_KEY, gameIds: ids, fetchedAt: new Date() })
-    .onConflictDoUpdate({
-      target: collectionCache.key,
-      set: { gameIds: ids, fetchedAt: new Date() },
-    });
-  return ids;
+async function seedRussianNames(): Promise<string[]> {
+  const marked = await db.select({ id: curatorMeta.id }).from(curatorMeta).where(eq(curatorMeta.id, RU_NAMES_KEY)).limit(1);
+  if (marked.length > 0) return RU_COMPANIES;
+  const lowered = [...new Set(RU_COMPANIES.map((name) => name.trim().toLowerCase()).filter((name) => name.length > 1))];
+  await db.transaction(async (tx) => {
+    await tx.delete(originStudios).where(eq(originStudios.list, "ru"));
+    for (let index = 0; index < lowered.length; index += 400) {
+      const slice = lowered.slice(index, index + 400);
+      await tx.insert(originStudios).values(
+        slice.flatMap((name) => [
+          { list: "ru" as const, role: "developer", name },
+          { list: "ru" as const, role: "publisher", name },
+        ]),
+      );
+    }
+    await tx
+      .insert(curatorMeta)
+      .values({ id: RU_NAMES_KEY, fetchedAt: new Date() })
+      .onConflictDoUpdate({ target: curatorMeta.id, set: { fetchedAt: new Date() } });
+  });
+  return RU_COMPANIES;
 }
 
 async function ensureStudioNames(list: "ua" | "ru", role: "developer" | "publisher"): Promise<void> {
+  if (list === "ru") {
+    await seedRussianNames();
+    return;
+  }
   const existing = await db
     .select({ name: originStudios.name })
     .from(originStudios)

@@ -99,10 +99,10 @@ export async function getGameBySlug(slug: string): Promise<GameDetails | null> {
     developedByRussianStudio(developerNames),
     publishedByRussianPublisher(publisherNames),
   ]);
-  if (ukrainianStudio && !origins.includes("ua")) origins.push("ua");
-  if (russianStudio && !origins.includes("ru")) origins.push("ru");
-  if (russianPublisher && !origins.includes("ru")) origins.push("ru");
-  return { ...toDetails(game, links, details), similar, ...community, origins };
+  const tagged = origins.filter((origin) => origin !== "ru");
+  if (ukrainianStudio && !tagged.includes("ua")) tagged.push("ua");
+  if ((russianStudio || russianPublisher) && !tagged.includes("ru")) tagged.push("ru");
+  return { ...toDetails(game, links, details), similar, ...community, origins: tagged };
 }
 
 async function ensureDetails(game: GameRow): Promise<GameDetailRow | null> {

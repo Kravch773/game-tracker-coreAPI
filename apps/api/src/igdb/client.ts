@@ -98,12 +98,39 @@ export async function developerCompanies(
   return [...found.entries()].map(([id, name]) => ({ id, name }));
 }
 
+export async function companyIdsByNames(names: string[]): Promise<number[]> {
+  const ids = new Set<number>();
+  const safe = names
+    .map((name) => name.replace(/[\n\r]/g, " ").trim())
+    .filter((name) => name.length > 1 && !/["\\;]/.test(name));
+  for (let index = 0; index < safe.length; index += 20) {
+    const quoted = safe
+      .slice(index, index + 20)
+      .map((name) => `"${name}"`)
+      .join(",");
+    const payload = await postIgdb(
+      COMPANIES_URL,
+      ["fields name;", `where name = (${quoted});`, "limit 50;"].join("\n"),
+      "IGDB company names",
+    );
+    if (!Array.isArray(payload)) continue;
+    for (const row of payload) {
+      if (row && typeof row === "object" && "id" in row && typeof row.id === "number") ids.add(row.id);
+    }
+  }
+  return [...ids];
+}
+
 export async function fetchGamesByDevelopers(
   companyIds: number[],
-  role: "developer" | "publisher" = "developer",
+  role: "developer" | "publisher" | "any" = "developer",
 ): Promise<IgdbGame[]> {
   const byId = new Map<number, IgdbGame>();
   const playable = "game_type = (0,8,9) & version_parent = null";
+  const credit =
+    role === "any"
+      ? "(involved_companies.developer = true | involved_companies.publisher = true)"
+      : `involved_companies.${role} = true`;
   for (let index = 0; index < companyIds.length; index += 6) {
     const chunk = companyIds.slice(index, index + 6).filter((id) => Number.isInteger(id)).join(",");
     if (!chunk) continue;
@@ -111,7 +138,7 @@ export async function fetchGamesByDevelopers(
       await postGames(
         [
           SEARCH_FIELDS,
-          `where involved_companies.company = (${chunk}) & involved_companies.${role} = true & ${playable};`,
+          `where involved_companies.company = (${chunk}) & ${credit} & ${playable};`,
           "sort total_rating_count desc;",
           "limit 200;",
         ].join("\n"),
