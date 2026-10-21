@@ -13,7 +13,7 @@ import { fetchIgdbGame, fetchTimeToBeat, matchCompanies, matchFranchises, queryI
 import { communityForGame } from "./community.js";
 import { mapIgdbDetails, mapIgdbGame, type MappedGame } from "../igdb/map.js";
 import { scheduleMetacriticEnrich } from "../rawg/enrich.js";
-import { developedByUkrainianStudio, russianGames, ukrainianGames } from "./origin.js";
+import { developedByRussianStudio, developedByUkrainianStudio, russianGames, ukrainianGames } from "./origin.js";
 import { originsFor } from "../steam/curators.js";
 import { toDetails, toSummary } from "./present.js";
 import { loose, looseIncludes } from "./text.js";
@@ -82,13 +82,16 @@ export async function getGameBySlug(slug: string): Promise<GameDetails | null> {
   scheduleMetacriticEnrich(game, links);
   const steamIds = links.flatMap((link) => (link.kind === "steam" && link.externalId ? [link.externalId] : []));
   const developers = details?.developers ?? [];
-  const [similar, community, origins, sameStudio] = await Promise.all([
+  const developerNames = Array.isArray(developers) ? developers.filter((name): name is string => typeof name === "string") : [];
+  const [similar, community, origins, ukrainianStudio, russianStudio] = await Promise.all([
     similarGames(details?.similarIgdbIds ?? []),
     communityForGame(game.id),
     originsFor(steamIds),
-    developedByUkrainianStudio(Array.isArray(developers) ? developers.filter((name): name is string => typeof name === "string") : []),
+    developedByUkrainianStudio(developerNames),
+    developedByRussianStudio(developerNames),
   ]);
-  if (sameStudio && !origins.includes("ua")) origins.push("ua");
+  if (ukrainianStudio && !origins.includes("ua")) origins.push("ua");
+  if (russianStudio && !origins.includes("ru")) origins.push("ru");
   return { ...toDetails(game, links, details), similar, ...community, origins };
 }
 

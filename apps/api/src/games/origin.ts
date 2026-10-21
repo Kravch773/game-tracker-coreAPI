@@ -10,22 +10,30 @@ import { storeIgdbGames } from "./service.js";
 import { refreshCurators } from "../steam/curators.js";
 
 const CACHE_KEY = "origin:v3:ua";
-const RU_CACHE_KEY = "origin:v1:ru";
+const RU_CACHE_KEY = "origin:v2:ru";
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const PAGE_SIZE = 20;
 
 let pending: Promise<string[]> | null = null;
 let pendingRu: Promise<string[]> | null = null;
-let studioFill: Promise<void> | null = null;
+const studioFill = new Map<"ua" | "ru", Promise<void>>();
 
 export async function developedByUkrainianStudio(names: string[]): Promise<boolean> {
+  return developedByStudio(names, "ua");
+}
+
+export async function developedByRussianStudio(names: string[]): Promise<boolean> {
+  return developedByStudio(names, "ru");
+}
+
+async function developedByStudio(names: string[], list: "ua" | "ru"): Promise<boolean> {
   const wanted = [...new Set(names.map((name) => name.trim().toLowerCase()).filter((name) => name.length > 1))];
   if (wanted.length === 0) return false;
-  await ensureStudioNames();
+  await ensureStudioNames(list);
   const rows = await db
     .select({ name: originStudios.name })
     .from(originStudios)
-    .where(and(eq(originStudios.list, "ua"), inArray(originStudios.name, wanted)))
+    .where(and(eq(originStudios.list, list), inArray(originStudios.name, wanted)))
     .limit(1);
   return rows.length > 0;
 }
@@ -128,7 +136,7 @@ async function refresh(fallback: string[]): Promise<string[]> {
   const matched = await linkedIds(appIds);
   let studios: number[] = [];
   try {
-    studios = await saveStudioNames(matched.map((row) => row.igdbId));
+    studios = await saveStudioNames(matched.map((row) => row.igdbId), "ua");
   } catch (error) {
     console.error("Ukrainian studio names failed", error);
   }
@@ -185,8 +193,26 @@ async function refreshRussian(fallback: string[]): Promise<string[]> {
   }
 
   const matched = await linkedIds(appIds);
+  let studios: number[] = [];
+  try {
+    studios = await saveStudioNames(matched.map((row) => row.igdbId), "ru");
+  } catch (error) {
+    console.error("Russian studio names failed", error);
+  }
+  let siblingIds: string[] = [];
+  if (studios.length > 0 && igdbConfigured()) {
+    try {
+      const remote = await fetchGamesByDevelopers(studios);
+      for (let index = 0; index < remote.length; index += 30) {
+        siblingIds.push(...(await storeIgdbGames(remote.slice(index, index + 30))));
+      }
+    } catch (error) {
+      console.error("Russian studio games failed", error);
+    }
+  }
+
   const matchedIds = new Set(matched.map((row) => row.id));
-  const extras = storedIds.filter((id) => !matchedIds.has(id));
+  const extras = [...storedIds, ...siblingIds].filter((id) => !matchedIds.has(id));
   const extraRows =
     extras.length === 0
       ? []
@@ -203,32 +229,34 @@ async function refreshRussian(fallback: string[]): Promise<string[]> {
   return ids;
 }
 
-async function ensureStudioNames(): Promise<void> {
-  const existing = await db.select({ name: originStudios.name }).from(originStudios).where(eq(originStudios.list, "ua")).limit(1);
+async function ensureStudioNames(list: "ua" | "ru"): Promise<void> {
+  const existing = await db.select({ name: originStudios.name }).from(originStudios).where(eq(originStudios.list, list)).limit(1);
   if (existing.length > 0) return;
-  if (!studioFill) {
-    studioFill = fillStudioNames().finally(() => {
-      studioFill = null;
+  let pendingFill = studioFill.get(list);
+  if (!pendingFill) {
+    pendingFill = fillStudioNames(list).finally(() => {
+      studioFill.delete(list);
     });
+    studioFill.set(list, pendingFill);
   }
-  await studioFill;
+  await pendingFill;
 }
 
-async function fillStudioNames(): Promise<void> {
-  const appIds = await steamAppIds("ua");
+async function fillStudioNames(list: "ua" | "ru"): Promise<void> {
+  const appIds = await steamAppIds(list);
   const linked = await linkedIds(appIds);
-  await saveStudioNames(linked.map((row) => row.igdbId));
+  await saveStudioNames(linked.map((row) => row.igdbId), list);
 }
 
-async function saveStudioNames(igdbIds: number[]): Promise<number[]> {
+async function saveStudioNames(igdbIds: number[], list: "ua" | "ru"): Promise<number[]> {
   if (!igdbConfigured() || igdbIds.length === 0) return [];
   const companies = await developerCompanies([...new Set(igdbIds)]);
   const names = [...new Set(companies.map((company) => company.name.trim().toLowerCase()).filter((name) => name.length > 1))];
   if (names.length === 0) return companies.map((company) => company.id);
   await db.transaction(async (tx) => {
-    await tx.delete(originStudios).where(eq(originStudios.list, "ua"));
+    await tx.delete(originStudios).where(eq(originStudios.list, list));
     for (let index = 0; index < names.length; index += 400) {
-      await tx.insert(originStudios).values(names.slice(index, index + 400).map((name) => ({ list: "ua", name })));
+      await tx.insert(originStudios).values(names.slice(index, index + 400).map((name) => ({ list, name })));
     }
   });
   return companies.map((company) => company.id);
