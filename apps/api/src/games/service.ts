@@ -16,7 +16,7 @@ import { scheduleMetacriticEnrich } from "../rawg/enrich.js";
 import {
   developedByRussianStudio,
   developedByUkrainianStudio,
-  publishedByRussianPublisher,
+  matchingRussianPublishers,
   russianGames,
   ukrainianGames,
 } from "./origin.js";
@@ -91,18 +91,18 @@ export async function getGameBySlug(slug: string): Promise<GameDetails | null> {
   const publishers = details?.publishers ?? [];
   const developerNames = Array.isArray(developers) ? developers.filter((name): name is string => typeof name === "string") : [];
   const publisherNames = Array.isArray(publishers) ? publishers.filter((name): name is string => typeof name === "string") : [];
-  const [similar, community, origins, ukrainianStudio, russianStudio, russianPublisher] = await Promise.all([
+  const [similar, community, origins, ukrainianStudio, russianStudio, russianPublishers] = await Promise.all([
     similarGames(details?.similarIgdbIds ?? []),
     communityForGame(game.id),
     originsFor(steamIds),
     developedByUkrainianStudio(developerNames),
     developedByRussianStudio(developerNames),
-    publishedByRussianPublisher(publisherNames),
+    matchingRussianPublishers(publisherNames),
   ]);
   const tagged = origins.filter((origin) => origin !== "ru");
   if (ukrainianStudio && !tagged.includes("ua")) tagged.push("ua");
-  if ((russianStudio || russianPublisher) && !tagged.includes("ru")) tagged.push("ru");
-  return { ...toDetails(game, links, details), similar, ...community, origins: tagged };
+  if (russianStudio && !tagged.includes("ru")) tagged.push("ru");
+  return { ...toDetails(game, links, details), similar, ...community, origins: tagged, russianPublishers };
 }
 
 async function ensureDetails(game: GameRow): Promise<GameDetailRow | null> {

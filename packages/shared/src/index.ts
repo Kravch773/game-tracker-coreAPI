@@ -116,6 +116,7 @@ export type GameDetails = GameSummary & {
   videos: GameVideo[];
   developers: string[];
   publishers: string[];
+  russianPublishers: string[];
   series: string | null;
   themes: string[];
   ageRatings: string[];

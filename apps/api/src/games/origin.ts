@@ -11,7 +11,7 @@ import { storeIgdbGames } from "./service.js";
 import { refreshCurators } from "../steam/curators.js";
 
 const CACHE_KEY = "origin:v3:ua";
-const RU_CACHE_KEY = "origin:v4:ru";
+const RU_CACHE_KEY = "origin:v5:ru";
 const RU_NAMES_KEY = "ru-plugin-v1";
 const RU_COMPANIES = JSON.parse(readFileSync(new URL("./data/ru-companies.json", import.meta.url), "utf8")) as string[];
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -29,8 +29,8 @@ export async function developedByRussianStudio(names: string[]): Promise<boolean
   return creditedCompany(names, "ru", "developer");
 }
 
-export async function publishedByRussianPublisher(names: string[]): Promise<boolean> {
-  return creditedCompany(names, "ru", "publisher");
+export async function matchingRussianPublishers(names: string[]): Promise<string[]> {
+  return creditedNames(names, "ru", "publisher");
 }
 
 const COMPANY_SUFFIX = /(?:\s+(?:inc\.?|ltd\.?|llc|gmbh|interactive|entertainment|games|game|studios?|software|media|publishing|productions?|pty))+$/i;
@@ -43,15 +43,19 @@ function companyKeys(name: string): string[] {
 }
 
 async function creditedCompany(names: string[], list: "ua" | "ru", role: "developer" | "publisher"): Promise<boolean> {
+  return (await creditedNames(names, list, role)).length > 0;
+}
+
+async function creditedNames(names: string[], list: "ua" | "ru", role: "developer" | "publisher"): Promise<string[]> {
   const wanted = [...new Set(names.flatMap(companyKeys))];
-  if (wanted.length === 0) return false;
+  if (wanted.length === 0) return [];
   await ensureStudioNames(list, role);
   const rows = await db
     .select({ name: originStudios.name })
     .from(originStudios)
-    .where(and(eq(originStudios.list, list), eq(originStudios.role, role), inArray(originStudios.name, wanted)))
-    .limit(1);
-  return rows.length > 0;
+    .where(and(eq(originStudios.list, list), eq(originStudios.role, role), inArray(originStudios.name, wanted)));
+  const found = new Set(rows.map((row) => row.name));
+  return names.filter((name) => companyKeys(name).some((key) => found.has(key)));
 }
 
 export async function ukrainianGames(
@@ -195,7 +199,7 @@ async function refreshRussian(fallback: string[]): Promise<string[]> {
   if (!igdbConfigured()) return fallback;
   try {
     const companyIds = await companyIdsByNames(names);
-    const remote = await fetchGamesByDevelopers(companyIds, "any");
+    const remote = await fetchGamesByDevelopers(companyIds, "developer");
     const storedIds: string[] = [];
     for (let index = 0; index < remote.length; index += 30) {
       storedIds.push(...(await storeIgdbGames(remote.slice(index, index + 30))));
