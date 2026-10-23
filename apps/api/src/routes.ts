@@ -19,6 +19,7 @@ import { releaseCalendar } from "./games/calendar.js";
 import { backlogInMonth, favoritesForUser, listForUser, loadHomeCollections, upcomingFromBacklog } from "./games/collections.js";
 import { sitemapPage } from "./games/sitemap.js";
 import { getGameBySlug, searchGames } from "./games/service.js";
+import { suggestCredits } from "./games/suggest.js";
 import {
   LibraryInputError,
   MissingGameError,
@@ -118,6 +119,17 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   app.get("/sitemap", async (request) => {
     const parsed = z.object({ page: z.coerce.number().int().min(1).max(20).optional() }).safeParse(request.query);
     return sitemapPage(parsed.success ? (parsed.data.page ?? 1) : 1);
+  });
+
+  app.get("/suggest", async (request, reply) => {
+    const parsed = z
+      .object({
+        field: z.enum(["developer", "publisher", "series"]),
+        q: z.string().trim().max(80).optional(),
+      })
+      .safeParse(request.query);
+    if (!parsed.success) return reply.code(400).send({ error: t("api.badPayload") });
+    return { names: await suggestCredits(parsed.data.field, parsed.data.q ?? "") };
   });
 
   app.get("/games", async (request, reply) => {

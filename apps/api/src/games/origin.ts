@@ -25,8 +25,8 @@ export async function developedByUkrainianStudio(names: string[]): Promise<boole
   return creditedCompany(names, "ua", "developer");
 }
 
-export async function developedByRussianStudio(names: string[]): Promise<boolean> {
-  return creditedCompany(names, "ru", "developer");
+export async function matchingRussianDevelopers(names: string[]): Promise<string[]> {
+  return creditedNames(names, "ru", "developer");
 }
 
 export async function matchingRussianPublishers(names: string[]): Promise<string[]> {

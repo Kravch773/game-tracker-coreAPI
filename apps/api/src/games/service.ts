@@ -14,8 +14,8 @@ import { communityForGame } from "./community.js";
 import { mapIgdbDetails, mapIgdbGame, type MappedGame } from "../igdb/map.js";
 import { scheduleMetacriticEnrich } from "../rawg/enrich.js";
 import {
-  developedByRussianStudio,
   developedByUkrainianStudio,
+  matchingRussianDevelopers,
   matchingRussianPublishers,
   russianGames,
   ukrainianGames,
@@ -91,18 +91,18 @@ export async function getGameBySlug(slug: string): Promise<GameDetails | null> {
   const publishers = details?.publishers ?? [];
   const developerNames = Array.isArray(developers) ? developers.filter((name): name is string => typeof name === "string") : [];
   const publisherNames = Array.isArray(publishers) ? publishers.filter((name): name is string => typeof name === "string") : [];
-  const [similar, community, origins, ukrainianStudio, russianStudio, russianPublishers] = await Promise.all([
+  const [similar, community, origins, ukrainianStudio, russianDevelopers, russianPublishers] = await Promise.all([
     similarGames(details?.similarIgdbIds ?? []),
     communityForGame(game.id),
     originsFor(steamIds),
     developedByUkrainianStudio(developerNames),
-    developedByRussianStudio(developerNames),
+    matchingRussianDevelopers(developerNames),
     matchingRussianPublishers(publisherNames),
   ]);
   const tagged = origins.filter((origin) => origin !== "ru");
   if (ukrainianStudio && !tagged.includes("ua")) tagged.push("ua");
-  if (russianStudio && !tagged.includes("ru")) tagged.push("ru");
-  return { ...toDetails(game, links, details), similar, ...community, origins: tagged, russianPublishers };
+  if (russianDevelopers.length > 0 && !tagged.includes("ru")) tagged.push("ru");
+  return { ...toDetails(game, links, details), similar, ...community, origins: tagged, russianDevelopers, russianPublishers };
 }
 
 async function ensureDetails(game: GameRow): Promise<GameDetailRow | null> {
