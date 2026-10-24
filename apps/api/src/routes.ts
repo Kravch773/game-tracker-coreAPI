@@ -1,4 +1,4 @@
-import { CATALOG_PLATFORMS, SEARCH_GENRES, TRAILERS_ENABLED, t, type SearchFilters } from "@gametracker/shared";
+import { CATALOG_PLATFORMS, MAX_FILTER_VALUES, SEARCH_GENRES, TRAILERS_ENABLED, t, type SearchFilters } from "@gametracker/shared";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
 import {
@@ -40,20 +40,28 @@ import { activityFeed, listFollows, setFollow } from "./social/service.js";
 
 const searchQuery = z.object({
   q: z.string().trim().max(80).optional(),
-  genre: z.enum(SEARCH_GENRES.map((item) => item.id) as [string, ...string[]]).optional(),
-  platform: z.enum(CATALOG_PLATFORMS.map((item) => item.id) as [string, ...string[]]).optional(),
+  genre: many(z.enum(SEARCH_GENRES.map((item) => item.id) as [string, ...string[]])),
+  platform: many(z.enum(CATALOG_PLATFORMS.map((item) => item.id) as [string, ...string[]])),
   year: z.coerce.number().int().min(1970).max(2035).optional(),
   offset: z.coerce.number().int().min(0).max(500).optional(),
   origin: z.enum(["ua", "ru"]).optional(),
   sort: z.enum(["popular", "release", "title"]).optional(),
-  developer: z.string().trim().max(80).optional(),
-  publisher: z.string().trim().max(80).optional(),
-  series: z.string().trim().max(80).optional(),
+  developer: many(z.string().trim().max(80)),
+  publisher: many(z.string().trim().max(80)),
+  series: many(z.string().trim().max(80)),
 });
 
-function textFilter(value: string | undefined): string | undefined {
-  const text = value?.trim() ?? "";
-  return text.length >= 2 ? text : undefined;
+// A repeated query key (?genre=rpg&genre=indie) arrives as an array, a single one as a string.
+function many<T extends z.ZodTypeAny>(item: T) {
+  return z.preprocess(
+    (value) => (value == null || value === "" ? undefined : Array.isArray(value) ? value : [value]),
+    z.array(item).max(MAX_FILTER_VALUES).optional(),
+  );
+}
+
+function textFilter(values: string[] | undefined): string[] | undefined {
+  const texts = [...new Set((values ?? []).map((value) => value.trim()).filter((value) => value.length >= 2))];
+  return texts.length > 0 ? texts : undefined;
 }
 
 const slugParams = z.object({
@@ -142,8 +150,8 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     }
     const query = parsed.data.q ?? "";
     const filters = {
-      genre: parsed.data.genre as SearchFilters["genre"],
-      platform: parsed.data.platform as SearchFilters["platform"],
+      genre: parsed.data.genre?.length ? (parsed.data.genre as SearchFilters["genre"]) : undefined,
+      platform: parsed.data.platform?.length ? (parsed.data.platform as SearchFilters["platform"]) : undefined,
       year: parsed.data.year,
       sort: parsed.data.sort,
       developer: textFilter(parsed.data.developer),
@@ -152,7 +160,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     };
     const sortedBrowse = parsed.data.sort === "release" || parsed.data.sort === "title";
     const credit = Boolean(filters.developer || filters.publisher || filters.series);
-    if (!query.trim() && !filters.genre && !filters.platform && !filters.year && !credit && parsed.data.origin !== "ua" && parsed.data.origin !== "ru" && !sortedBrowse) {
+    if (!query.trim() && !filters.genre?.length && !filters.platform?.length && !filters.year && !credit && parsed.data.origin !== "ua" && parsed.data.origin !== "ru" && !sortedBrowse) {
       return reply.code(400).send({ error: t("api.missingQuery") });
     }
 

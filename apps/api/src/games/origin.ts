@@ -75,11 +75,11 @@ export async function russianGames(
 }
 
 async function narrow(ids: string[], filters: SearchFilters, query: string): Promise<string[]> {
-  const platform = filters.platform ? catalogPlatform(filters.platform) : null;
+  const platforms: string[] = (filters.platform ?? []).flatMap((id) => catalogPlatform(id)?.name ?? []);
   const year = filters.year ? String(filters.year) : "";
   const sort = filters.sort ?? "popular";
   const needle = query.trim().toLowerCase();
-  const needsRows = Boolean(platform || year || needle.length >= 2 || sort === "release" || sort === "title");
+  const needsRows = Boolean(platforms.length > 0 || year || needle.length >= 2 || sort === "release" || sort === "title");
   if (!needsRows || ids.length === 0) return ids;
 
   const rows = await db
@@ -93,8 +93,8 @@ async function narrow(ids: string[], filters: SearchFilters, query: string): Pro
   });
   if (needle.length >= 2) ordered = ordered.filter((row) => looseIncludes(row.title, needle));
   if (year) ordered = ordered.filter((row) => (row.releaseDate ?? "").startsWith(year));
-  if (platform) {
-    ordered = ordered.filter((row) => (Array.isArray(row.platforms) ? row.platforms : []).includes(platform.name));
+  if (platforms.length > 0) {
+    ordered = ordered.filter((row) => (Array.isArray(row.platforms) ? row.platforms : []).some((name) => platforms.includes(name)));
   }
   if (sort === "title") ordered.sort((a, b) => a.title.localeCompare(b.title));
   if (sort === "release") ordered.sort((a, b) => (b.releaseDate ?? "").localeCompare(a.releaseDate ?? ""));

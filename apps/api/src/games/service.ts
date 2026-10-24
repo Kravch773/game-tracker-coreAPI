@@ -41,7 +41,7 @@ export async function searchGames(
   offset = 0,
   origin?: "ua" | "ru",
 ): Promise<{ games: GameSummary[]; hasMore: boolean }> {
-  const credit = Boolean(filters.developer || filters.publisher || filters.series);
+  const credit = hasCredit(filters);
   if (!credit && origin === "ua") return ukrainianGames(offset, filters, rawQuery);
   if (!credit && origin === "ru") return russianGames(offset, filters, rawQuery);
   const query = rawQuery.replace(/\s+/g, " ").trim();
@@ -382,45 +382,56 @@ async function missingIgdbIds(ids: number[]): Promise<number[]> {
 function cacheKey(query: string, filters: SearchFilters): string {
   const base = query.toLowerCase();
   const sort = filters.sort && filters.sort !== "popular" ? filters.sort : "";
-  const credit = [filters.developer ?? "", filters.publisher ?? "", filters.series ?? ""].join("~").toLowerCase();
-  if (credit.replace(/~/g, "")) {
-    return `f9:${base}|${filters.genre ?? ""}|${filters.platform ?? ""}|${filters.year ?? ""}|${credit}|${sort}`;
+  const list = (values: string[] | undefined) => [...(values ?? [])].map((value) => value.toLowerCase()).sort().join(",");
+  const lists = `${list(filters.genre)}|${list(filters.platform)}|${filters.year ?? ""}`;
+  if (hasCredit(filters)) {
+    return `m1:${base}|${lists}|${list(filters.developer)}~${list(filters.publisher)}~${list(filters.series)}|${sort}`;
   }
   if (!hasFilters(filters)) return sort ? `d5:${base}|${sort}` : `d5:${base}`;
-  const core = `f6:${base}|${filters.genre ?? ""}|${filters.platform ?? ""}|${filters.year ?? ""}`;
+  const core = `m1:${base}|${lists}`;
   return sort ? `${core}|${sort}` : core;
 }
 
+function hasCredit(filters: SearchFilters): boolean {
+  return Boolean(filters.developer?.length || filters.publisher?.length || filters.series?.length);
+}
+
 function hasFilters(filters: SearchFilters): boolean {
-  return Boolean(filters.genre || filters.platform || filters.year || filters.developer || filters.publisher || filters.series);
+  return Boolean(filters.genre?.length || filters.platform?.length || filters.year || hasCredit(filters));
 }
 
 async function creditClauses(filters: SearchFilters): Promise<string[] | null> {
   const clauses: string[] = [];
-  if (filters.developer) {
-    const ids = await matchCompanies(filters.developer);
+  if (filters.developer?.length) {
+    const ids = await matchMany(filters.developer, matchCompanies);
     if (ids.length === 0) return null;
     clauses.push(`involved_companies.company = (${ids.join(",")}) & involved_companies.developer = true`);
   }
-  if (filters.publisher) {
-    const ids = await matchCompanies(filters.publisher);
+  if (filters.publisher?.length) {
+    const ids = await matchMany(filters.publisher, matchCompanies);
     if (ids.length === 0) return null;
     clauses.push(`involved_companies.company = (${ids.join(",")}) & involved_companies.publisher = true`);
   }
-  if (filters.series) {
-    const ids = await matchFranchises(filters.series);
+  if (filters.series?.length) {
+    const ids = await matchMany(filters.series, matchFranchises);
     if (ids.length === 0) return null;
     clauses.push(`franchises = (${ids.join(",")})`);
   }
   return clauses;
 }
 
+// Any of the names may match, so their IGDB ids are pooled into one list.
+async function matchMany(names: string[], match: (name: string) => Promise<number[]>): Promise<number[]> {
+  const found = await Promise.all(names.map((name) => match(name)));
+  return [...new Set(found.flat())];
+}
+
 function filteredQuery(query: string, filters: SearchFilters, limit = SEARCH_POOL, extra: string[] = []): string {
   const where = ["game_type = (0,1,2,3,4,8,9,10)", "version_parent = null", "cover != null", ...extra];
-  const genre = filters.genre ? catalogGenre(filters.genre) : null;
-  const platform = filters.platform ? catalogPlatform(filters.platform) : null;
-  if (genre) where.push(`genres = (${genre.igdbId})`);
-  if (platform) where.push(`platforms = (${platform.igdbId})`);
+  const genres = (filters.genre ?? []).flatMap((id) => catalogGenre(id)?.igdbId ?? []);
+  const platforms = (filters.platform ?? []).flatMap((id) => catalogPlatform(id)?.igdbId ?? []);
+  if (genres.length > 0) where.push(`genres = (${genres.join(",")})`);
+  if (platforms.length > 0) where.push(`platforms = (${platforms.join(",")})`);
   if (filters.year) {
     const start = Math.floor(Date.UTC(filters.year, 0, 1) / 1000);
     const end = Math.floor(Date.UTC(filters.year + 1, 0, 1) / 1000);
@@ -438,13 +449,13 @@ function filteredQuery(query: string, filters: SearchFilters, limit = SEARCH_POO
 }
 
 function matchesLocal(game: GameRow, filters: SearchFilters): boolean {
-  if (filters.developer || filters.publisher || filters.series) return false;
-  if (filters.genre) return false;
+  if (hasCredit(filters)) return false;
+  if (filters.genre?.length) return false;
   if (filters.year && game.releaseDate?.slice(0, 4) !== String(filters.year)) return false;
-  const platform = filters.platform ? catalogPlatform(filters.platform) : null;
-  if (platform) {
+  const platforms: string[] = (filters.platform ?? []).flatMap((id) => catalogPlatform(id)?.name ?? []);
+  if (platforms.length > 0) {
     const names = Array.isArray(game.platforms) ? game.platforms : [];
-    if (!names.includes(platform.name)) return false;
+    if (!names.some((name) => platforms.includes(name))) return false;
   }
   return true;
 }

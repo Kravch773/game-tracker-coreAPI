@@ -190,15 +190,18 @@ export type ReleaseCalendar = {
 
 export type SearchSort = "popular" | "release" | "title";
 
+// Each list matches any of its values; different lists must all match.
 export type SearchFilters = {
-  genre?: SearchGenreId;
-  platform?: CatalogPlatformId;
+  genre?: SearchGenreId[];
+  platform?: CatalogPlatformId[];
   year?: number;
   sort?: SearchSort;
-  developer?: string;
-  publisher?: string;
-  series?: string;
+  developer?: string[];
+  publisher?: string[];
+  series?: string[];
 };
+
+export const MAX_FILTER_VALUES = 10;
 
 export type ActivityEvent = {
   username: string;
