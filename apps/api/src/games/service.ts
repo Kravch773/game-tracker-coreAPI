@@ -3,6 +3,7 @@ import {
   catalogGenre,
   catalogPlatform,
   type GameDetails,
+  type GameOrigin,
   type GameSummary,
   type SearchFilters,
 } from "@gametracker/shared";
@@ -99,7 +100,7 @@ export async function getGameBySlug(slug: string): Promise<GameDetails | null> {
     matchingRussianDevelopers(developerNames),
     matchingRussianPublishers(publisherNames),
   ]);
-  const tagged = origins.filter((origin) => origin !== "ru");
+  const tagged: GameOrigin[] = origins.filter((origin) => origin !== "ru");
   if (ukrainianStudio && !tagged.includes("ua")) tagged.push("ua");
   if (russianDevelopers.length > 0 && !tagged.includes("ru")) tagged.push("ru");
   return { ...toDetails(game, links, details), similar, ...community, origins: tagged, russianDevelopers, russianPublishers };
