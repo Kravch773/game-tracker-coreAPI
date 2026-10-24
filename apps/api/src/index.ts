@@ -13,7 +13,7 @@ import { startCuratorRefresh } from "./steam/curators.js";
 const requestLocale = new AsyncLocalStorage<Locale>();
 bindLocale(() => requestLocale.getStore());
 
-const app = Fastify({ logger: true });
+const app = Fastify({ logger: true, trustProxy: env.trustProxy });
 
 app.addHook("onRequest", (request, _reply, done) => {
   const value = readCookie(request.headers.cookie, "locale");

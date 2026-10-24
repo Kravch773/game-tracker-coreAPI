@@ -21,7 +21,14 @@ export const env = {
   rawgApiKey: process.env.RAWG_API_KEY?.trim() ?? "",
   steamWebApiKey: process.env.STEAM_WEB_API_KEY?.trim() ?? "",
   sessionSecret: required("SESSION_SECRET"),
+  trustProxy: proxyHops(process.env.TRUST_PROXY),
 };
+
+function proxyHops(value: string | undefined): ((address: string, hop: number) => boolean) | false {
+  const hops = Number(value?.trim());
+  if (!Number.isInteger(hops) || hops <= 0) return false;
+  return (_address, hop) => hop < hops;
+}
 
 export function igdbConfigured(): boolean {
   return Boolean(env.twitchClientId && env.twitchClientSecret);

@@ -1,10 +1,10 @@
 import { t, type AuthUser } from "@gametracker/shared";
 import type { FastifyRequest } from "fastify";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, gt, lt, sql } from "drizzle-orm";
 import { db } from "../db/client.js";
-import { users } from "../db/schema.js";
+import { sessions, users } from "../db/schema.js";
 import { hashPassword, verifyPassword } from "./password.js";
-import { readCookie, readSession } from "./session.js";
+import { SESSION_MAX_AGE_SECONDS, readCookie, readSession, signSession } from "./session.js";
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const USERNAME_PATTERN = /^[A-Za-z0-9_]+$/;
@@ -116,7 +116,11 @@ export async function changePassword(userId: string, currentPassword: string, ne
     throw new AuthInputError(t("auth.passwordTooShort"));
   }
   const user = await requirePassword(userId, currentPassword);
-  await db.update(users).set({ passwordHash: await hashPassword(nextPassword) }).where(eq(users.id, user.id));
+  const passwordHash = await hashPassword(nextPassword);
+  await db.transaction(async (tx) => {
+    await tx.update(users).set({ passwordHash }).where(eq(users.id, user.id));
+    await tx.delete(sessions).where(eq(sessions.userId, user.id));
+  });
 }
 
 export async function deleteAccount(userId: string, password: string): Promise<void> {
@@ -124,14 +128,31 @@ export async function deleteAccount(userId: string, password: string): Promise<v
   await db.delete(users).where(eq(users.id, user.id));
 }
 
+export async function createSession(userId: string): Promise<string> {
+  await db.delete(sessions).where(and(eq(sessions.userId, userId), lt(sessions.expiresAt, new Date())));
+  const inserted = await db
+    .insert(sessions)
+    .values({ userId, expiresAt: new Date(Date.now() + SESSION_MAX_AGE_SECONDS * 1000) })
+    .returning({ id: sessions.id });
+  const session = inserted[0];
+  if (!session) throw new Error("Session insert returned no row");
+  return signSession(session.id);
+}
+
+export async function endSession(request: FastifyRequest): Promise<void> {
+  const sessionId = readSession(readCookie(request.headers.cookie, "session"));
+  if (sessionId) await db.delete(sessions).where(eq(sessions.id, sessionId));
+}
+
 export async function userFromRequest(request: FastifyRequest): Promise<AuthUser | null> {
-  const userId = readSession(readCookie(request.headers.cookie, "session"));
-  if (!userId) return null;
+  const sessionId = readSession(readCookie(request.headers.cookie, "session"));
+  if (!sessionId) return null;
 
   const rows = await db
     .select({ id: users.id, username: users.username, email: users.email, steamId: users.steamId })
-    .from(users)
-    .where(eq(users.id, userId))
+    .from(sessions)
+    .innerJoin(users, eq(users.id, sessions.userId))
+    .where(and(eq(sessions.id, sessionId), gt(sessions.expiresAt, new Date())))
     .limit(1);
   return rows[0] ?? null;
 }

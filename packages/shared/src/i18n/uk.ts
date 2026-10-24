@@ -283,6 +283,7 @@ export const uk = {
     usernameTaken: "Таке ім’я вже зайняте",
     identityTaken: "Така пошта або ім’я вже зайняті",
     signInRequired: "Потрібно увійти",
+    tooManyAttempts: "Забагато спроб. Спробуйте трохи згодом",
   },
   api: {
     missingQuery: "Вкажіть параметр q",

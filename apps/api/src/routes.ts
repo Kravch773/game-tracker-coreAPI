@@ -5,14 +5,17 @@ import {
   AuthInputError,
   changePassword,
   changeUsername,
+  createSession,
   deleteAccount,
+  endSession,
   loginUser,
   parseLogin,
   parseRegister,
   registerUser,
   userFromRequest,
 } from "./auth/service.js";
-import { clearSessionCookie, sessionCookie, signSession } from "./auth/session.js";
+import { LOGIN_PER_ACCOUNT, LOGIN_PER_IP, REGISTER_PER_IP, record, reset, retryAfter } from "./auth/rate-limit.js";
+import { clearSessionCookie, sessionCookie } from "./auth/session.js";
 import { browseCatalog } from "./games/browse.js";
 import { companyGames } from "./games/companies.js";
 import { releaseCalendar } from "./games/calendar.js";
@@ -196,9 +199,14 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.post("/auth/register", async (request, reply) => {
+    const ipKey = `register:${request.ip}`;
+    const wait = retryAfter(ipKey, REGISTER_PER_IP);
+    if (wait > 0) return tooManyAttempts(reply, wait);
     try {
-      const user = await registerUser(parseRegister(request.body));
-      reply.header("Set-Cookie", sessionCookie(signSession(user.id)));
+      const input = parseRegister(request.body);
+      record(ipKey, REGISTER_PER_IP);
+      const user = await registerUser(input);
+      reply.header("Set-Cookie", sessionCookie(await createSession(user.id)));
       return reply.code(201).send({ user });
     } catch (error) {
       if (error instanceof AuthInputError) {
@@ -209,11 +217,21 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.post("/auth/login", async (request, reply) => {
+    const ipKey = `login:${request.ip}`;
     try {
       const input = parseLogin(request.body);
+      const accountKey = `login-account:${input.login.toLowerCase()}`;
+      const wait = Math.max(retryAfter(ipKey, LOGIN_PER_IP), retryAfter(accountKey, LOGIN_PER_ACCOUNT));
+      if (wait > 0) return tooManyAttempts(reply, wait);
+      record(ipKey, LOGIN_PER_IP);
+
       const user = await loginUser(input.login, input.password);
-      if (!user) return reply.code(401).send({ error: t("auth.badCredentials") });
-      reply.header("Set-Cookie", sessionCookie(signSession(user.id)));
+      if (!user) {
+        record(accountKey, LOGIN_PER_ACCOUNT);
+        return reply.code(401).send({ error: t("auth.badCredentials") });
+      }
+      reset(accountKey);
+      reply.header("Set-Cookie", sessionCookie(await createSession(user.id)));
       return { user };
     } catch (error) {
       if (error instanceof AuthInputError) {
@@ -250,6 +268,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
         typeof body?.currentPassword === "string" ? body.currentPassword : "",
         typeof body?.nextPassword === "string" ? body.nextPassword : "",
       );
+      reply.header("Set-Cookie", sessionCookie(await createSession(user.id)));
       return { ok: true };
     } catch (error) {
       if (error instanceof AuthInputError) return reply.code(error.statusCode).send({ error: error.message });
@@ -271,7 +290,8 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     }
   });
 
-  app.post("/auth/logout", async (_request, reply) => {
+  app.post("/auth/logout", async (request, reply) => {
+    await endSession(request);
     reply.header("Set-Cookie", clearSessionCookie());
     return { ok: true };
   });
@@ -421,6 +441,10 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       return libraryError(reply, error);
     }
   });
+}
+
+function tooManyAttempts(reply: FastifyReply, seconds: number): FastifyReply {
+  return reply.code(429).header("Retry-After", String(seconds)).send({ error: t("auth.tooManyAttempts") });
 }
 
 function libraryError(reply: FastifyReply, error: unknown): FastifyReply {

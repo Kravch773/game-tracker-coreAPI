@@ -285,6 +285,7 @@ export const en = {
     usernameTaken: "That name is already taken",
     identityTaken: "That email or name is already taken",
     signInRequired: "You need to log in",
+    tooManyAttempts: "Too many attempts. Try again a bit later",
   },
   api: {
     missingQuery: "Provide the q parameter",

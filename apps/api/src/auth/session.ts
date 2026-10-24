@@ -1,47 +1,35 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { env } from "../env.js";
 
-const WEEK_SECONDS = 60 * 60 * 24 * 30;
+export const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30;
 
-export function signSession(userId: string): string {
-  const payload = Buffer.from(
-    JSON.stringify({ sub: userId, exp: Math.floor(Date.now() / 1000) + WEEK_SECONDS }),
-  ).toString("base64url");
-  const signature = createHmac("sha256", env.sessionSecret).update(payload).digest("base64url");
-  return `${payload}.${signature}`;
+const secure = env.webOrigin.startsWith("https://") ? "; Secure" : "";
+
+export function signSession(sessionId: string): string {
+  const signature = createHmac("sha256", env.sessionSecret).update(sessionId).digest("base64url");
+  return `${sessionId}.${signature}`;
 }
 
 export function readSession(token: string | undefined): string | null {
   if (!token) return null;
-  const [payload, signature] = token.split(".");
-  if (!payload || !signature) return null;
+  const [sessionId, signature] = token.split(".");
+  if (!sessionId || !signature) return null;
 
-  const expected = createHmac("sha256", env.sessionSecret).update(payload).digest("base64url");
+  const expected = createHmac("sha256", env.sessionSecret).update(sessionId).digest("base64url");
   const actualBuffer = Buffer.from(signature);
   const expectedBuffer = Buffer.from(expected);
   if (actualBuffer.length !== expectedBuffer.length || !timingSafeEqual(actualBuffer, expectedBuffer)) {
     return null;
   }
-
-  try {
-    const data = JSON.parse(Buffer.from(payload, "base64url").toString()) as {
-      sub?: unknown;
-      exp?: unknown;
-    };
-    if (typeof data.sub !== "string" || typeof data.exp !== "number") return null;
-    if (data.exp < Date.now() / 1000) return null;
-    return data.sub;
-  } catch {
-    return null;
-  }
+  return /^[0-9a-f-]{36}$/i.test(sessionId) ? sessionId : null;
 }
 
 export function sessionCookie(token: string): string {
-  return `session=${token}; HttpOnly; Path=/; Max-Age=${WEEK_SECONDS}; SameSite=Lax`;
+  return `session=${token}; HttpOnly; Path=/; Max-Age=${SESSION_MAX_AGE_SECONDS}; SameSite=Lax${secure}`;
 }
 
 export function clearSessionCookie(): string {
-  return "session=; HttpOnly; Path=/; Max-Age=0; SameSite=Lax";
+  return `session=; HttpOnly; Path=/; Max-Age=0; SameSite=Lax${secure}`;
 }
 
 export function readCookie(header: string | undefined, name: string): string | undefined {
