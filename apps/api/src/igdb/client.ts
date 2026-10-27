@@ -166,41 +166,42 @@ export async function fetchIgdbGamesByIds(ids: number[]): Promise<IgdbGame[]> {
   return games;
 }
 
-type IgdbFranchiseRef = { id?: number; name?: string };
-export type IgdbFranchised = IgdbGame & { franchise?: IgdbFranchiseRef; franchises?: IgdbFranchiseRef[] };
-export type IgdbFranchiseGame = IgdbGame & { franchises?: number[] };
+type IgdbGroupRef = { id?: number; name?: string; games?: number[] };
+export type IgdbSeriesOf = IgdbGame & { collections?: IgdbGroupRef[]; franchise?: IgdbGroupRef; franchises?: IgdbGroupRef[] };
+export type IgdbSeriesGame = IgdbGame & { collections?: number[]; franchises?: number[] };
 
-// The franchises each game belongs to; IGDB answers up to 500 ids per request.
-export async function fetchFranchisesOf(ids: number[]): Promise<IgdbFranchised[]> {
-  const found: IgdbFranchised[] = [];
+// The collections and franchises each game belongs to; IGDB answers up to 500 ids per request.
+export async function fetchSeriesOf(ids: number[]): Promise<IgdbSeriesOf[]> {
+  const found: IgdbSeriesOf[] = [];
   for (let index = 0; index < ids.length; index += 500) {
     const chunk = ids.slice(index, index + 500).join(",");
     if (!chunk) continue;
     const payload = await postGames(
-      ["fields franchise.name,franchises.name;", `where id = (${chunk});`, "limit 500;"].join("\n"),
-      "IGDB franchises of games",
+      ["fields collections.name,collections.games,franchise.name,franchises.name;", `where id = (${chunk});`, "limit 500;"].join("\n"),
+      "IGDB series of games",
     );
-    found.push(...(gamesFrom(payload) as IgdbFranchised[]));
+    found.push(...(gamesFrom(payload) as IgdbSeriesOf[]));
   }
   return found;
 }
 
-// Main games, remakes and remasters of the given franchises, with enough fields to store them.
-export async function fetchFranchiseGames(franchiseIds: number[]): Promise<IgdbFranchiseGame[]> {
-  const found: IgdbFranchiseGame[] = [];
-  for (let index = 0; index < franchiseIds.length; index += 40) {
-    const chunk = franchiseIds.slice(index, index + 40).join(",");
+// Main games of the given collections or franchises. A franchise is only the fallback for games without a
+// collection, so its list skips games that have one: Star Wars then shows its loose games, not all of them.
+export async function fetchSeriesGames(field: "collections" | "franchises", groupIds: number[]): Promise<IgdbSeriesGame[]> {
+  const found: IgdbSeriesGame[] = [];
+  for (let index = 0; index < groupIds.length; index += 40) {
+    const chunk = groupIds.slice(index, index + 40).join(",");
     for (let offset = 0; offset < 1500; offset += 500) {
       const payload = await postGames(
         [
-          SEARCH_FIELDS.replace(";", ",franchises;"),
-          `where franchises = (${chunk}) & game_type = 0 & version_parent = null & cover != null & (total_rating_count >= 10 | hypes >= 10);`,
+          SEARCH_FIELDS.replace(";", `,${field};`),
+          `where ${field} = (${chunk})${field === "franchises" ? " & collections = null" : ""} & game_type = 0 & version_parent = null & cover != null & (total_rating_count >= 10 | hypes >= 10);`,
           "limit 500;",
           `offset ${offset};`,
         ].join("\n"),
-        "IGDB franchise games",
+        `IGDB ${field} games`,
       );
-      const page = gamesFrom(payload) as IgdbFranchiseGame[];
+      const page = gamesFrom(payload) as IgdbSeriesGame[];
       found.push(...page);
       if (page.length < 500) break;
     }

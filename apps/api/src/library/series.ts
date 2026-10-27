@@ -3,12 +3,12 @@ import { eq, inArray, sql } from "drizzle-orm";
 import { db } from "../db/client.js";
 import { franchiseGames, gameFranchises, games, listEntries, users, type StoredFranchiseGame } from "../db/schema.js";
 import { igdbConfigured } from "../env.js";
-import { fetchFranchiseGames, fetchFranchisesOf } from "../igdb/client.js";
+import { fetchSeriesGames, fetchSeriesOf, type IgdbSeriesOf } from "../igdb/client.js";
 import { mapIgdbGame } from "../igdb/map.js";
 
 const FRANCHISE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const GAMES_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-const MAX_SERIES = 80;
+const MAX_SERIES = 150;
 const MAX_GAMES = 60;
 
 type Entry = {
@@ -24,7 +24,10 @@ type Entry = {
 
 const pending = new Map<string, Promise<UserSeries | null>>();
 
-// The profile's games grouped by IGDB franchise, each series filled with the parts that are not in the lists yet.
+// A series is an IGDB collection, or the game's franchise when it has no collection. Both share the
+// cache tables: a collection keeps its own positive id and a franchise is stored as its negated id.
+
+// The profile's games grouped into series, each filled with the parts that are not in the lists yet.
 export function seriesForUsername(username: string): Promise<UserSeries | null> {
   const key = username.toLowerCase();
   const running = pending.get(key);
@@ -59,18 +62,18 @@ async function buildSeries(username: string): Promise<UserSeries | null> {
     .where(eq(listEntries.userId, user.id));
   if (entries.length === 0) return { series: [] };
 
-  const franchiseOf = await franchisesFor(entries);
+  const seriesOfGame = await seriesFor(entries);
   const groups = new Map<number, { name: string; entries: Entry[] }>();
   for (const entry of entries) {
-    const franchise = franchiseOf.get(entry.gameId);
-    if (!franchise) continue;
-    const group = groups.get(franchise.id) ?? { name: franchise.name, entries: [] };
+    const series = seriesOfGame.get(entry.gameId);
+    if (!series) continue;
+    const group = groups.get(series.id) ?? { name: series.name, entries: [] };
     group.entries.push(entry);
-    groups.set(franchise.id, group);
+    groups.set(series.id, group);
   }
 
   const picked = [...groups.entries()].sort((left, right) => right[1].entries.length - left[1].entries.length).slice(0, MAX_SERIES);
-  const full = await gamesOfFranchises(picked.map(([id]) => id));
+  const full = await gamesOfSeries(picked.map(([id]) => id));
   const byIgdb = new Map(entries.map((entry) => [entry.igdbId, entry]));
 
   const series: GameSeries[] = picked.flatMap(([id, group]) => {
@@ -101,8 +104,19 @@ function toSeriesGame(game: StoredFranchiseGame | Entry, entry: Entry | undefine
   };
 }
 
-// Reads each game's franchise from the cache and asks IGDB once for the games it has not seen in a month.
-async function franchisesFor(entries: Entry[]): Promise<Map<string, { id: number; name: string }>> {
+// The biggest collection wins, so Black Ops sits in Call of Duty and Assassin's Creed II in Assassin's Creed.
+function seriesOf(game: IgdbSeriesOf): { id: number; name: string } | null {
+  const collection = [...(game.collections ?? [])]
+    .filter((item) => item.id && item.name?.trim())
+    .sort((left, right) => (right.games?.length ?? 0) - (left.games?.length ?? 0))[0];
+  if (collection?.id && collection.name) return { id: collection.id, name: collection.name.trim() };
+  const franchise = [game.franchise, ...(game.franchises ?? [])].find((item) => item?.id && item.name?.trim());
+  if (franchise?.id && franchise.name) return { id: -franchise.id, name: franchise.name.trim() };
+  return null;
+}
+
+// Reads each game's series from the cache and asks IGDB once for the games it has not seen in a month.
+async function seriesFor(entries: Entry[]): Promise<Map<string, { id: number; name: string }>> {
   const rows = await db.select().from(gameFranchises).where(
     inArray(
       gameFranchises.gameId,
@@ -118,16 +132,16 @@ async function franchisesFor(entries: Entry[]): Promise<Map<string, { id: number
 
   if (stale.length > 0 && igdbConfigured()) {
     try {
-      const remote = await fetchFranchisesOf(stale.map((entry) => entry.igdbId));
+      const remote = await fetchSeriesOf(stale.map((entry) => entry.igdbId));
       const byIgdb = new Map(remote.flatMap((game) => (game.id ? [[game.id, game] as const] : [])));
       const now = new Date();
       const values = stale.map((entry) => {
         const game = byIgdb.get(entry.igdbId);
-        const main = [game?.franchise, ...(game?.franchises ?? [])].find((item) => item?.id && item.name?.trim());
+        const series = game ? seriesOf(game) : null;
         return {
           gameId: entry.gameId,
-          franchiseId: main?.id ?? null,
-          franchiseName: main?.name?.trim() ?? null,
+          franchiseId: series?.id ?? null,
+          franchiseName: series?.name ?? null,
           fetchedAt: now,
         };
       });
@@ -146,7 +160,7 @@ async function franchisesFor(entries: Entry[]): Promise<Map<string, { id: number
       }
       for (const value of values) known.set(value.gameId, value);
     } catch (error) {
-      console.error("Series franchise lookup failed", error);
+      console.error("Series lookup failed", error);
     }
   }
 
@@ -157,8 +171,8 @@ async function franchisesFor(entries: Entry[]): Promise<Map<string, { id: number
   return result;
 }
 
-// Every main game of each franchise, cached for a week; stale franchises are refreshed together.
-async function gamesOfFranchises(ids: number[]): Promise<Map<number, StoredFranchiseGame[]>> {
+// Every main game of each series, cached for a week; stale series are refreshed together.
+async function gamesOfSeries(ids: number[]): Promise<Map<number, StoredFranchiseGame[]>> {
   const result = new Map<number, StoredFranchiseGame[]>();
   if (ids.length === 0) return result;
 
@@ -170,9 +184,16 @@ async function gamesOfFranchises(ids: number[]): Promise<Map<number, StoredFranc
   if (stale.length === 0 || !igdbConfigured()) return result;
 
   try {
-    const remote = await fetchFranchiseGames(stale);
+    const collections = stale.filter((id) => id > 0);
+    const franchises = stale.filter((id) => id < 0).map((id) => -id);
+    const remote = [
+      ...(collections.length > 0 ? (await fetchSeriesGames("collections", collections)).map((game) => ({ game, groups: game.collections ?? [] })) : []),
+      ...(franchises.length > 0
+        ? (await fetchSeriesGames("franchises", franchises)).map((game) => ({ game, groups: (game.franchises ?? []).map((id) => -id) }))
+        : []),
+    ];
     const lists = new Map<number, StoredFranchiseGame[]>(stale.map((id) => [id, []]));
-    for (const game of remote) {
+    for (const { game, groups } of remote) {
       const mapped = mapIgdbGame(game);
       if (!mapped) continue;
       const stored: StoredFranchiseGame = {
@@ -182,7 +203,7 @@ async function gamesOfFranchises(ids: number[]): Promise<Map<number, StoredFranc
         coverUrl: mapped.coverUrl,
         releaseDate: mapped.releaseDate,
       };
-      for (const franchise of game.franchises ?? []) lists.get(franchise)?.push(stored);
+      for (const group of groups) lists.get(group)?.push(stored);
     }
     const now = new Date();
     const values = [...lists.entries()].map(([franchiseId, list]) => ({ franchiseId, games: list, fetchedAt: now }));
