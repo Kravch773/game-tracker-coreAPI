@@ -36,7 +36,7 @@ import {
 import { importMyGamesList, parseImportRows } from "./library/import.js";
 import { SteamError, listSteamWishlistMissing, syncSteamLibrary, syncSteamWishlist } from "./steam/service.js";
 import { TrailersUnavailableError, trailersForSlug } from "./rawg/trailers.js";
-import { activityFeed, listFollows, setFollow } from "./social/service.js";
+import { activityFeed, followedRatings, listFollows, setFollow } from "./social/service.js";
 
 const searchQuery = z.object({
   q: z.string().trim().max(80).optional(),
@@ -399,6 +399,18 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     const entry = await entryForSlug(user.id, parsed.data.slug);
     if (!entry) return reply.code(404).send({ error: t("game.notFound") });
     return entry;
+  });
+
+  app.get("/games/:slug/following", async (request, reply) => {
+    const user = await userFromRequest(request);
+    if (!user) return reply.code(401).send({ error: t("auth.signInRequired") });
+
+    const parsed = slugParams.safeParse(request.params);
+    if (!parsed.success) return reply.code(400).send({ error: t("api.badSlug") });
+
+    const ratings = await followedRatings(user.id, parsed.data.slug);
+    if (!ratings) return reply.code(404).send({ error: t("game.notFound") });
+    return { ratings };
   });
 
   app.put("/games/:slug/entry", async (request, reply) => {

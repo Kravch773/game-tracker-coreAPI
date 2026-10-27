@@ -234,6 +234,14 @@ export type GameEntry = {
   steamMinutes: number | null;
 };
 
+// A rating that someone the viewer follows gave to one game.
+export type FollowedRating = {
+  username: string;
+  status: LibraryStatus;
+  rating: number;
+  at: string;
+};
+
 export type LibraryGame = GameSummary & {
   rating: number | null;
   review: string | null;

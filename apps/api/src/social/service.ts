@@ -1,4 +1,4 @@
-import { stripReviewLinks, t, type ActivityEvent } from "@gametracker/shared";
+import { LIBRARY_STATUSES, stripReviewLinks, t, type ActivityEvent, type FollowedRating, type LibraryStatus } from "@gametracker/shared";
 import { and, desc, eq, inArray, isNotNull, or, sql } from "drizzle-orm";
 import { AuthInputError } from "../auth/service.js";
 import { db } from "../db/client.js";
@@ -51,6 +51,40 @@ export async function setFollow(
 
   await db.insert(follows).values({ followerId, followingId: target.id }).onConflictDoNothing();
   return { following: true };
+}
+
+// Ratings for one game from the people the viewer follows, best first.
+export async function followedRatings(viewerId: string, slug: string): Promise<FollowedRating[] | null> {
+  const found = await db.select({ id: games.id }).from(games).where(eq(games.slug, slug)).limit(1);
+  const game = found[0];
+  if (!game) return null;
+
+  const rows = await db
+    .select({
+      username: users.username,
+      status: listEntries.status,
+      rating: listEntries.rating,
+      at: listEntries.updatedAt,
+    })
+    .from(follows)
+    .innerJoin(listEntries, and(eq(listEntries.userId, follows.followingId), eq(listEntries.gameId, game.id)))
+    .innerJoin(users, eq(users.id, follows.followingId))
+    .where(and(eq(follows.followerId, viewerId), isNotNull(listEntries.rating)))
+    .orderBy(desc(listEntries.rating), desc(listEntries.updatedAt))
+    .limit(50);
+
+  return rows.flatMap((row) =>
+    row.rating == null || !(LIBRARY_STATUSES as readonly string[]).includes(row.status)
+      ? []
+      : [
+          {
+            username: row.username,
+            status: row.status as LibraryStatus,
+            rating: Number(row.rating),
+            at: row.at instanceof Date ? row.at.toISOString() : new Date(row.at).toISOString(),
+          },
+        ],
+  );
 }
 
 export async function activityFeed(viewerId: string | null, followingOnly: boolean): Promise<ActivityEvent[]> {
