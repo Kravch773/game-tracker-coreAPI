@@ -166,6 +166,48 @@ export async function fetchIgdbGamesByIds(ids: number[]): Promise<IgdbGame[]> {
   return games;
 }
 
+type IgdbFranchiseRef = { id?: number; name?: string };
+export type IgdbFranchised = IgdbGame & { franchise?: IgdbFranchiseRef; franchises?: IgdbFranchiseRef[] };
+export type IgdbFranchiseGame = IgdbGame & { franchises?: number[] };
+
+// The franchises each game belongs to; IGDB answers up to 500 ids per request.
+export async function fetchFranchisesOf(ids: number[]): Promise<IgdbFranchised[]> {
+  const found: IgdbFranchised[] = [];
+  for (let index = 0; index < ids.length; index += 500) {
+    const chunk = ids.slice(index, index + 500).join(",");
+    if (!chunk) continue;
+    const payload = await postGames(
+      ["fields franchise.name,franchises.name;", `where id = (${chunk});`, "limit 500;"].join("\n"),
+      "IGDB franchises of games",
+    );
+    found.push(...(gamesFrom(payload) as IgdbFranchised[]));
+  }
+  return found;
+}
+
+// Main games, remakes and remasters of the given franchises, with enough fields to store them.
+export async function fetchFranchiseGames(franchiseIds: number[]): Promise<IgdbFranchiseGame[]> {
+  const found: IgdbFranchiseGame[] = [];
+  for (let index = 0; index < franchiseIds.length; index += 40) {
+    const chunk = franchiseIds.slice(index, index + 40).join(",");
+    for (let offset = 0; offset < 1500; offset += 500) {
+      const payload = await postGames(
+        [
+          SEARCH_FIELDS.replace(";", ",franchises;"),
+          `where franchises = (${chunk}) & game_type = 0 & version_parent = null & cover != null & (total_rating_count >= 10 | hypes >= 10);`,
+          "limit 500;",
+          `offset ${offset};`,
+        ].join("\n"),
+        "IGDB franchise games",
+      );
+      const page = gamesFrom(payload) as IgdbFranchiseGame[];
+      found.push(...page);
+      if (page.length < 500) break;
+    }
+  }
+  return found;
+}
+
 export async function matchCompanies(name: string): Promise<number[]> {
   return matchNames(COMPANIES_URL, name, "IGDB company match");
 }

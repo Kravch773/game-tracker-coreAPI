@@ -119,6 +119,31 @@ export const collectionCache = pgTable("collection_cache", {
   fetchedAt: timestamp("fetched_at", { withTimezone: true }).notNull(),
 });
 
+// The main IGDB franchise of a game; a null franchise is cached too so the game is not asked about again.
+export const gameFranchises = pgTable("game_franchises", {
+  gameId: uuid("game_id")
+    .primaryKey()
+    .references(() => games.id, { onDelete: "cascade" }),
+  franchiseId: integer("franchise_id"),
+  franchiseName: text("franchise_name"),
+  fetchedAt: timestamp("fetched_at", { withTimezone: true }).notNull(),
+});
+
+export type StoredFranchiseGame = {
+  igdbId: number;
+  slug: string;
+  title: string;
+  coverUrl: string | null;
+  releaseDate: string | null;
+};
+
+// Every main game of a franchise as IGDB lists it, kept as JSON so games outside anyone's lists stay out of the catalog tables.
+export const franchiseGames = pgTable("franchise_games", {
+  franchiseId: integer("franchise_id").primaryKey(),
+  games: jsonb("games").$type<StoredFranchiseGame[]>().notNull(),
+  fetchedAt: timestamp("fetched_at", { withTimezone: true }).notNull(),
+});
+
 export const searchCache = pgTable("search_cache", {
   query: text("query").primaryKey(),
   gameIds: uuid("game_ids").array().notNull(),

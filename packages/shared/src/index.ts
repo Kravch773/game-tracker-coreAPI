@@ -234,6 +234,26 @@ export type GameEntry = {
   steamMinutes: number | null;
 };
 
+// One game of a series; status and rating are the profile owner's, null when it is not in their lists.
+export type SeriesGame = {
+  slug: string;
+  title: string;
+  coverUrl: string | null;
+  releaseDate: string | null;
+  status: LibraryStatus | null;
+  rating: number | null;
+};
+
+export type GameSeries = {
+  id: number;
+  name: string;
+  games: SeriesGame[];
+};
+
+export type UserSeries = {
+  series: GameSeries[];
+};
+
 // A rating that someone the viewer follows gave to one game.
 export type FollowedRating = {
   username: string;

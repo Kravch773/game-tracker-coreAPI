@@ -36,6 +36,7 @@ import {
 import { importMyGamesList, parseImportRows } from "./library/import.js";
 import { SteamError, listSteamWishlistMissing, syncSteamLibrary, syncSteamWishlist } from "./steam/service.js";
 import { TrailersUnavailableError, trailersForSlug } from "./rawg/trailers.js";
+import { seriesForUsername } from "./library/series.js";
 import { activityFeed, followedRatings, listFollows, setFollow } from "./social/service.js";
 
 const searchQuery = z.object({
@@ -348,6 +349,14 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     const library = await libraryForUsername(parsed.data.username, viewer?.id ?? null);
     if (!library) return reply.code(404).send({ error: t("profile.notFound") });
     return library;
+  });
+
+  app.get("/users/:username/series", async (request, reply) => {
+    const parsed = usernameParams.safeParse(request.params);
+    if (!parsed.success) return reply.code(400).send({ error: t("api.badUsername") });
+    const result = await seriesForUsername(parsed.data.username);
+    if (!result) return reply.code(404).send({ error: t("profile.notFound") });
+    return result;
   });
 
   app.get("/users/:username/follows", async (request, reply) => {
