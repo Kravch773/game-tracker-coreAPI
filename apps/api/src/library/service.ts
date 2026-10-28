@@ -10,6 +10,7 @@ import {
 } from "@gametracker/shared";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { db } from "../db/client.js";
+import { queueMetacriticBackfill } from "../rawg/enrich.js";
 import { favorites, follows, games, listEntries, steamPlays, steamWishMissing, steamWishes, users } from "../db/schema.js";
 
 export class LibraryInputError extends Error {}
@@ -86,6 +87,10 @@ export async function libraryForUsername(username: string, viewerId: string | nu
     following: await countOf(eq(follows.followerId, user.id)),
     followedByMe: viewerId ? await followsUser(viewerId, user.id) : false,
   };
+
+  void queueMetacriticBackfill(entries.map((entry) => entry.id)).catch((error: unknown) => {
+    console.error("Metacritic backfill queue failed", error);
+  });
 
   for (const entry of entries) {
     if (!isLibraryStatus(entry.status)) continue;

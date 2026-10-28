@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq, inArray, isNull, lt, notExists, or } from "drizzle-orm";
 import { db } from "../db/client.js";
 import type { GameLinkRow, GameRow } from "../db/schema.js";
 import { gameLinks, games } from "../db/schema.js";
@@ -26,6 +26,59 @@ export function scheduleMetacriticEnrich(game: GameRow, links: GameLinkRow[]): v
     .finally(() => {
       inFlight.delete(game.id);
     });
+}
+
+const backfill: { id: string; title: string }[] = [];
+const queued = new Set<string>();
+let draining = false;
+const BACKFILL_BATCH = 80;
+const BACKFILL_GAP_MS = 300;
+
+// Profiles show Metacritic badges for games whose pages were never opened, so a profile view queues the
+// ones still missing a score; they are looked up one by one in the background.
+export async function queueMetacriticBackfill(gameIds: string[]): Promise<void> {
+  if (!rawgConfigured() || gameIds.length === 0) return;
+  const staleBefore = new Date(Date.now() - RECHECK_MS);
+  const rows = await db
+    .select({ id: games.id, title: games.title })
+    .from(games)
+    .where(
+      and(
+        inArray(games.id, gameIds),
+        isNull(games.metacriticScore),
+        or(isNull(games.metacriticCheckedAt), lt(games.metacriticCheckedAt, staleBefore)),
+        notExists(db.select({ id: gameLinks.id }).from(gameLinks).where(and(eq(gameLinks.gameId, games.id), eq(gameLinks.kind, "metacritic")))),
+      ),
+    )
+    .limit(BACKFILL_BATCH);
+  for (const row of rows) {
+    if (queued.has(row.id) || inFlight.has(row.id)) continue;
+    queued.add(row.id);
+    backfill.push(row);
+  }
+  if (!draining) void drain();
+}
+
+async function drain(): Promise<void> {
+  draining = true;
+  try {
+    for (let next = backfill.shift(); next; next = backfill.shift()) {
+      const { id, title } = next;
+      queued.delete(id);
+      if (inFlight.has(id)) continue;
+      inFlight.add(id);
+      try {
+        await enrichMetacritic(id, title);
+      } catch (error) {
+        console.error("Metacritic backfill failed", error);
+      } finally {
+        inFlight.delete(id);
+      }
+      await new Promise((resolve) => setTimeout(resolve, BACKFILL_GAP_MS));
+    }
+  } finally {
+    draining = false;
+  }
 }
 
 function shouldEnrich(game: GameRow, links: GameLinkRow[]): boolean {
