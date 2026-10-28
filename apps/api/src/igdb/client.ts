@@ -209,6 +209,13 @@ export async function fetchSeriesGames(field: "collections" | "franchises", grou
   return found;
 }
 
+// One game by its IGDB slug, for game pages opened before the game reached the catalog.
+export async function fetchIgdbGameBySlug(slug: string): Promise<IgdbGame | null> {
+  if (!/^[a-z0-9-]+$/.test(slug)) return null;
+  const payload = await postGames([SEARCH_FIELDS, `where slug = "${slug}";`, "limit 1;"].join("\n"), "IGDB game by slug");
+  return gamesFrom(payload)[0] ?? null;
+}
+
 export async function matchCompanies(name: string): Promise<number[]> {
   return matchNames(COMPANIES_URL, name, "IGDB company match");
 }

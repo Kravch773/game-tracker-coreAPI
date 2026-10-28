@@ -10,7 +10,7 @@ import {
 import { db } from "../db/client.js";
 import { gameDetails, gameLinks, games, searchCache, type GameDetailRow, type GameRow } from "../db/schema.js";
 import { igdbConfigured } from "../env.js";
-import { fetchIgdbGame, fetchTimeToBeat, matchCompanies, matchFranchises, queryIgdbGames, searchIgdb } from "../igdb/client.js";
+import { fetchIgdbGame, fetchIgdbGameBySlug, fetchTimeToBeat, matchCompanies, matchFranchises, queryIgdbGames, searchIgdb } from "../igdb/client.js";
 import { communityForGame } from "./community.js";
 import { mapIgdbDetails, mapIgdbGame, type MappedGame } from "../igdb/map.js";
 import { scheduleMetacriticEnrich } from "../rawg/enrich.js";
@@ -81,7 +81,7 @@ export async function searchGames(
 
 export async function getGameBySlug(slug: string): Promise<GameDetails | null> {
   const rows = await db.select().from(games).where(eq(games.slug, slug)).limit(1);
-  const game = rows[0];
+  const game = rows[0] ?? (await importBySlug(slug));
   if (!game) return null;
 
   const links = await db.select().from(gameLinks).where(eq(gameLinks.gameId, game.id));
@@ -104,6 +104,22 @@ export async function getGameBySlug(slug: string): Promise<GameDetails | null> {
   if (ukrainianStudio && !tagged.includes("ua")) tagged.push("ua");
   if (russianDevelopers.length > 0 && !tagged.includes("ru")) tagged.push("ru");
   return { ...toDetails(game, links, details), similar, ...community, origins: tagged, russianDevelopers, russianPublishers };
+}
+
+// Series and other IGDB lists link to games that are not stored yet; the first visit pulls one in.
+async function importBySlug(slug: string): Promise<GameRow | null> {
+  if (!igdbConfigured()) return null;
+  try {
+    const remote = await fetchIgdbGameBySlug(slug);
+    if (!remote) return null;
+    const [id] = await storeIgdbGames([remote]);
+    if (!id) return null;
+    const rows = await db.select().from(games).where(eq(games.id, id)).limit(1);
+    return rows[0] ?? null;
+  } catch (error) {
+    console.error(`Game import for ${slug} failed`, error);
+    return null;
+  }
 }
 
 async function ensureDetails(game: GameRow): Promise<GameDetailRow | null> {
