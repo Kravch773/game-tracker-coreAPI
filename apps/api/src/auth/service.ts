@@ -26,17 +26,12 @@ export type RegisterInput = {
 
 export function parseRegister(body: unknown): RegisterInput {
   const record = objectOf(body);
-  const email = stringOf(record.email).toLowerCase();
+  const email = parseEmail(record.email);
   const username = stringOf(record.username);
   const password = typeof record.password === "string" ? record.password : "";
 
-  if (!EMAIL_PATTERN.test(email) || email.length > 254) {
-    throw new AuthInputError(t("auth.emailInvalid"));
-  }
   assertUsername(username);
-  if (password.length < 8 || password.length > 128) {
-    throw new AuthInputError(t("auth.passwordTooShort"));
-  }
+  assertPassword(password);
 
   return { email, username, password };
 }
@@ -52,24 +47,30 @@ export function parseLogin(body: unknown): { login: string; password: string } {
 }
 
 export async function registerUser(input: RegisterInput): Promise<AuthUser> {
+  await assertIdentityFree(input.email, input.username);
+  return insertUser(input.email, input.username, await hashPassword(input.password));
+}
+
+export async function assertIdentityFree(email: string, username: string): Promise<void> {
   const taken = await db
     .select({ email: users.email, username: users.username })
     .from(users)
-    .where(sql`lower(${users.email}) = ${input.email} OR lower(${users.username}) = ${input.username.toLowerCase()}`)
+    .where(sql`lower(${users.email}) = ${email} OR lower(${users.username}) = ${username.toLowerCase()}`)
     .limit(2);
 
-  if (taken.some((user) => user.email === input.email)) {
+  if (taken.some((user) => user.email === email)) {
     throw new AuthInputError(t("auth.emailTaken"), 409);
   }
   if (taken.length > 0) {
     throw new AuthInputError(t("auth.usernameTaken"), 409);
   }
+}
 
-  const passwordHash = await hashPassword(input.password);
+export async function insertUser(email: string, username: string, passwordHash: string): Promise<AuthUser> {
   try {
     const inserted = await db
       .insert(users)
-      .values({ email: input.email, username: input.username, passwordHash })
+      .values({ email, username, passwordHash })
       .returning({ id: users.id, username: users.username, email: users.email, steamId: users.steamId });
     const user = inserted[0];
     if (!user) throw new Error("User insert returned no row");
@@ -77,6 +78,20 @@ export async function registerUser(input: RegisterInput): Promise<AuthUser> {
   } catch (error) {
     if (errorCode(error) !== "23505") throw error;
     throw new AuthInputError(t("auth.identityTaken"), 409);
+  }
+}
+
+export function parseEmail(value: unknown): string {
+  const email = stringOf(value).toLowerCase();
+  if (!EMAIL_PATTERN.test(email) || email.length > 254) {
+    throw new AuthInputError(t("auth.emailInvalid"));
+  }
+  return email;
+}
+
+export function assertPassword(password: string): void {
+  if (password.length < 8 || password.length > 128) {
+    throw new AuthInputError(t("auth.passwordTooShort"));
   }
 }
 
@@ -112,9 +127,7 @@ export async function changeUsername(userId: string, username: string, password:
 }
 
 export async function changePassword(userId: string, currentPassword: string, nextPassword: string): Promise<void> {
-  if (nextPassword.length < 8 || nextPassword.length > 128) {
-    throw new AuthInputError(t("auth.passwordTooShort"));
-  }
+  assertPassword(nextPassword);
   const user = await requirePassword(userId, currentPassword);
   const passwordHash = await hashPassword(nextPassword);
   await db.transaction(async (tx) => {

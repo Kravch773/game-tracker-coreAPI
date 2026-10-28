@@ -159,6 +159,21 @@ export const users = pgTable("users", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+export type EmailCodePurpose = "signup" | "reset";
+export type SignupPayload = { username: string; passwordHash: string };
+
+// A one-time code sent by email. Signup codes carry the pending account, since the user row is only made once the code checks out.
+export const emailCodes = pgTable("email_codes", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  purpose: text("purpose").$type<EmailCodePurpose>().notNull(),
+  email: text("email").notNull(),
+  codeHash: text("code_hash").notNull(),
+  payload: jsonb("payload").$type<SignupPayload | null>(),
+  attempts: integer("attempts").notNull().default(0),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const sessions = pgTable("sessions", {
   id: uuid("id").primaryKey().defaultRandom(),
   userId: uuid("user_id")

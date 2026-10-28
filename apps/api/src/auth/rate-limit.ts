@@ -5,6 +5,9 @@ export type Limit = { max: number; windowMs: number };
 export const LOGIN_PER_ACCOUNT: Limit = { max: 10, windowMs: 15 * 60 * 1000 };
 export const LOGIN_PER_IP: Limit = { max: 30, windowMs: 15 * 60 * 1000 };
 export const REGISTER_PER_IP: Limit = { max: 10, windowMs: 60 * 60 * 1000 };
+export const EMAIL_PER_ADDRESS: Limit = { max: 5, windowMs: 60 * 60 * 1000 };
+export const EMAIL_PER_IP: Limit = { max: 15, windowMs: 60 * 60 * 1000 };
+export const CODE_PER_IP: Limit = { max: 30, windowMs: 15 * 60 * 1000 };
 
 const windows = new Map<string, Window>();
 

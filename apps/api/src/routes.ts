@@ -9,12 +9,26 @@ import {
   deleteAccount,
   endSession,
   loginUser,
+  parseEmail,
   parseLogin,
   parseRegister,
   registerUser,
   userFromRequest,
 } from "./auth/service.js";
-import { LOGIN_PER_ACCOUNT, LOGIN_PER_IP, REGISTER_PER_IP, record, reset, retryAfter } from "./auth/rate-limit.js";
+import { emailConfigured } from "./env.js";
+import { finishReset, finishSignup, parseCode, startReset, startSignup } from "./auth/codes.js";
+import { EmailSendError } from "./auth/email.js";
+import {
+  CODE_PER_IP,
+  EMAIL_PER_ADDRESS,
+  EMAIL_PER_IP,
+  LOGIN_PER_ACCOUNT,
+  LOGIN_PER_IP,
+  REGISTER_PER_IP,
+  record,
+  reset,
+  retryAfter,
+} from "./auth/rate-limit.js";
 import { clearSessionCookie, sessionCookie } from "./auth/session.js";
 import { browseCatalog } from "./games/browse.js";
 import { companyGames } from "./games/companies.js";
@@ -214,14 +228,72 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     try {
       const input = parseRegister(request.body);
       record(ipKey, REGISTER_PER_IP);
-      const user = await registerUser(input);
+      // Without a mail key the site keeps the old one-step signup instead of locking new users out.
+      if (!emailConfigured()) {
+        const user = await registerUser(input);
+        reply.header("Set-Cookie", sessionCookie(await createSession(user.id)));
+        return reply.code(201).send({ user });
+      }
+      const mailKey = `email:${input.email}`;
+      const mailWait = retryAfter(mailKey, EMAIL_PER_ADDRESS);
+      if (mailWait > 0) return tooManyAttempts(reply, mailWait);
+      record(mailKey, EMAIL_PER_ADDRESS);
+      await startSignup(input);
+      return reply.code(202).send({ pending: true, email: input.email });
+    } catch (error) {
+      return authError(reply, error);
+    }
+  });
+
+  app.post("/auth/register/verify", async (request, reply) => {
+    const ipKey = `code:${request.ip}`;
+    const wait = retryAfter(ipKey, CODE_PER_IP);
+    if (wait > 0) return tooManyAttempts(reply, wait);
+    record(ipKey, CODE_PER_IP);
+    const body = (request.body ?? {}) as { email?: unknown; code?: unknown };
+    try {
+      const user = await finishSignup(parseEmail(body.email), parseCode(body.code));
       reply.header("Set-Cookie", sessionCookie(await createSession(user.id)));
       return reply.code(201).send({ user });
     } catch (error) {
-      if (error instanceof AuthInputError) {
-        return reply.code(error.statusCode).send({ error: error.message });
-      }
-      throw error;
+      return authError(reply, error);
+    }
+  });
+
+  app.post("/auth/forgot", async (request, reply) => {
+    if (!emailConfigured()) return reply.code(503).send({ error: t("auth.emailUnavailable") });
+    const ipKey = `forgot:${request.ip}`;
+    const body = (request.body ?? {}) as { email?: unknown };
+    try {
+      const email = parseEmail(body.email);
+      const mailKey = `email:${email}`;
+      const wait = Math.max(retryAfter(ipKey, EMAIL_PER_IP), retryAfter(mailKey, EMAIL_PER_ADDRESS));
+      if (wait > 0) return tooManyAttempts(reply, wait);
+      record(ipKey, EMAIL_PER_IP);
+      record(mailKey, EMAIL_PER_ADDRESS);
+      await startReset(email);
+      return { ok: true };
+    } catch (error) {
+      return authError(reply, error);
+    }
+  });
+
+  app.post("/auth/reset", async (request, reply) => {
+    const ipKey = `code:${request.ip}`;
+    const wait = retryAfter(ipKey, CODE_PER_IP);
+    if (wait > 0) return tooManyAttempts(reply, wait);
+    record(ipKey, CODE_PER_IP);
+    const body = (request.body ?? {}) as { email?: unknown; code?: unknown; password?: unknown };
+    try {
+      const user = await finishReset(
+        parseEmail(body.email),
+        parseCode(body.code),
+        typeof body.password === "string" ? body.password : "",
+      );
+      reply.header("Set-Cookie", sessionCookie(await createSession(user.id)));
+      return { user };
+    } catch (error) {
+      return authError(reply, error);
     }
   });
 
@@ -474,6 +546,15 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
 
 function tooManyAttempts(reply: FastifyReply, seconds: number): FastifyReply {
   return reply.code(429).header("Retry-After", String(seconds)).send({ error: t("auth.tooManyAttempts") });
+}
+
+function authError(reply: FastifyReply, error: unknown): FastifyReply {
+  if (error instanceof AuthInputError) return reply.code(error.statusCode).send({ error: error.message });
+  if (error instanceof EmailSendError) {
+    reply.log.error(error);
+    return reply.code(502).send({ error: t("auth.emailFailed") });
+  }
+  throw error;
 }
 
 function libraryError(reply: FastifyReply, error: unknown): FastifyReply {

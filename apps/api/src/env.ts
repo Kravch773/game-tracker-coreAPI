@@ -20,6 +20,9 @@ export const env = {
   twitchClientSecret: process.env.TWITCH_CLIENT_SECRET?.trim() ?? "",
   rawgApiKey: process.env.RAWG_API_KEY?.trim() ?? "",
   steamWebApiKey: process.env.STEAM_WEB_API_KEY?.trim() ?? "",
+  resendApiKey: process.env.RESEND_API_KEY?.trim() ?? "",
+  // Resend's test sender only delivers to the Resend account's own address; a verified domain lifts that.
+  emailFrom: process.env.EMAIL_FROM?.trim() || "GameTracker <onboarding@resend.dev>",
   sessionSecret: required("SESSION_SECRET"),
   trustProxy: proxyHops(process.env.TRUST_PROXY),
 };
@@ -36,4 +39,8 @@ export function igdbConfigured(): boolean {
 
 export function rawgConfigured(): boolean {
   return Boolean(env.rawgApiKey);
+}
+
+export function emailConfigured(): boolean {
+  return Boolean(env.resendApiKey);
 }
