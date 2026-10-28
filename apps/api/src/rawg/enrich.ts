@@ -3,6 +3,7 @@ import { db } from "../db/client.js";
 import type { GameLinkRow, GameRow } from "../db/schema.js";
 import { gameLinks, games } from "../db/schema.js";
 import { env, rawgConfigured } from "../env.js";
+import { loose } from "../games/text.js";
 
 type RawgGame = {
   id: number;
@@ -12,6 +13,8 @@ type RawgGame = {
 };
 
 const inFlight = new Set<string>();
+// A game without a score is asked about again after this long: new releases get their Metacritic score weeks later.
+const RECHECK_MS = 14 * 24 * 60 * 60 * 1000;
 
 export function scheduleMetacriticEnrich(game: GameRow, links: GameLinkRow[]): void {
   if (!shouldEnrich(game, links) || inFlight.has(game.id)) return;
@@ -28,7 +31,7 @@ export function scheduleMetacriticEnrich(game: GameRow, links: GameLinkRow[]): v
 function shouldEnrich(game: GameRow, links: GameLinkRow[]): boolean {
   return (
     rawgConfigured() &&
-    game.metacriticCheckedAt === null &&
+    (game.metacriticCheckedAt === null || Date.now() - game.metacriticCheckedAt.getTime() > RECHECK_MS) &&
     game.metacriticScore === null &&
     !links.some((link) => link.kind === "metacritic")
   );
@@ -82,8 +85,16 @@ export async function findExactRawgGame(title: string): Promise<RawgGame | null>
   }
 
   const payload = (await response.json()) as { results?: RawgGame[] };
+  const results = payload.results ?? [];
   const wanted = title.trim().toLowerCase();
-  return payload.results?.find((game) => game.name.trim().toLowerCase() === wanted) ?? null;
+  const folded = loose(title);
+  // RAWG and IGDB punctuate titles differently ("Mass Effect: Legendary Edition", curly apostrophes), so an
+  // exact match comes first and a match ignoring punctuation and spaces is the fallback.
+  return (
+    results.find((game) => game.name.trim().toLowerCase() === wanted) ??
+    (folded.length > 0 ? results.find((game) => loose(game.name) === folded) : undefined) ??
+    null
+  );
 }
 
 async function metacriticUrl(game: RawgGame): Promise<string | null> {
