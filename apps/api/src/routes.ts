@@ -42,8 +42,10 @@ import {
   MissingGameError,
   entryForSlug,
   libraryForUsername,
+  parseBacklogOrder,
   parseEntryBody,
   removeEntry,
+  saveBacklogOrder,
   saveEntry,
   setFavorite,
 } from "./library/service.js";
@@ -465,6 +467,17 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     if (!user) return reply.code(401).send({ error: t("auth.signInRequired") });
     try {
       return await importMyGamesList(user.id, parseImportRows(request.body));
+    } catch (error) {
+      return libraryError(reply, error);
+    }
+  });
+
+  app.put("/me/backlog/order", async (request, reply) => {
+    const user = await userFromRequest(request);
+    if (!user) return reply.code(401).send({ error: t("auth.signInRequired") });
+    try {
+      await saveBacklogOrder(user.id, parseBacklogOrder(request.body));
+      return reply.code(204).send();
     } catch (error) {
       return libraryError(reply, error);
     }

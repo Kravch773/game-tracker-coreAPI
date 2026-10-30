@@ -270,6 +270,14 @@ export type LibraryGame = GameSummary & {
   finishedAt: string | null;
   metacriticScore: number | null;
   steamMinutes: number | null;
+  // Only backlog games can be priority; the backlog arrives in its owner's order, priority first.
+  priority: boolean;
+};
+
+// The whole backlog in its new order, as game ids: the priority group, then the rest.
+export type BacklogOrder = {
+  priority: string[];
+  rest: string[];
 };
 
 export type SteamSyncResult = {

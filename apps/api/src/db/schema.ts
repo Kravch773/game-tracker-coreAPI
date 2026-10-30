@@ -197,6 +197,8 @@ export const listEntries = pgTable(
     review: text("review"),
     startedAt: timestamp("started_at", { withTimezone: true }),
     finishedAt: timestamp("finished_at", { withTimezone: true }),
+    priority: boolean("priority").notNull().default(false),
+    position: integer("position"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

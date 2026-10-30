@@ -3,6 +3,7 @@ import {
   REVIEW_MAX_LENGTH,
   stripReviewLinks,
   t,
+  type BacklogOrder,
   type GameEntry,
   type LibraryGame,
   type LibraryStatus,
@@ -14,6 +15,9 @@ import { queueMetacriticBackfill } from "../rawg/enrich.js";
 import { favorites, follows, games, listEntries, steamPlays, steamWishMissing, steamWishes, users } from "../db/schema.js";
 
 export class LibraryInputError extends Error {}
+
+const MAX_BACKLOG = 5000;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export async function libraryForUsername(username: string, viewerId: string | null): Promise<UserLibrary | null> {
   const found = await db
@@ -33,6 +37,8 @@ export async function libraryForUsername(username: string, viewerId: string | nu
       addedAt: listEntries.createdAt,
       startedAt: listEntries.startedAt,
       finishedAt: listEntries.finishedAt,
+      priority: listEntries.priority,
+      position: listEntries.position,
       id: games.id,
       slug: games.slug,
       title: games.title,
@@ -93,9 +99,10 @@ export async function libraryForUsername(username: string, viewerId: string | nu
   });
 
   for (const entry of entries) {
-    if (!isLibraryStatus(entry.status)) continue;
+    if (!isLibraryStatus(entry.status) || entry.status === "backlog") continue;
     library[entry.status].push(toLibraryGame(entry, own));
   }
+  library.backlog = backlogOrder(entries.filter((entry) => entry.status === "backlog")).map((entry) => toLibraryGame(entry, own));
 
   return library;
 }
@@ -162,6 +169,8 @@ export async function saveEntry(
         ? current.finishedAt
         : now
       : (current?.finishedAt ?? null);
+  // A game keeps its place in the backlog only while it stays there; a newcomer starts unplaced, on top.
+  const place = current?.status === "backlog" && input.status === "backlog" ? {} : { priority: false, position: null };
   await db
     .insert(listEntries)
     .values({
@@ -176,7 +185,7 @@ export async function saveEntry(
     })
     .onConflictDoUpdate({
       target: [listEntries.userId, listEntries.gameId],
-      set: { status: input.status, rating, review, startedAt, finishedAt, updatedAt: now },
+      set: { status: input.status, rating, review, startedAt, finishedAt, updatedAt: now, ...place },
     });
 
   return {
@@ -194,6 +203,48 @@ export async function removeEntry(userId: string, slug: string): Promise<void> {
   await db
     .delete(listEntries)
     .where(and(eq(listEntries.userId, userId), eq(listEntries.gameId, game.id)));
+}
+
+export async function saveBacklogOrder(userId: string, order: BacklogOrder): Promise<void> {
+  const rows = [
+    ...order.priority.map((gameId, position) => ({ game_id: gameId, priority: true, position })),
+    ...order.rest.map((gameId, position) => ({ game_id: gameId, priority: false, position })),
+  ];
+  if (rows.length === 0) return;
+  await db.execute(sql`
+    UPDATE list_entries AS entry
+    SET priority = item.priority, position = item.position
+    FROM jsonb_to_recordset(${JSON.stringify(rows)}::jsonb) AS item(game_id uuid, priority boolean, position integer)
+    WHERE entry.user_id = ${userId} AND entry.game_id = item.game_id AND entry.status = 'backlog'
+  `);
+}
+
+export function parseBacklogOrder(body: unknown): BacklogOrder {
+  const record = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
+  const priority = gameIds(record.priority);
+  const rest = gameIds(record.rest);
+  if (!priority || !rest || new Set([...priority, ...rest]).size !== priority.length + rest.length) {
+    throw new LibraryInputError(t("api.badPayload"));
+  }
+  return { priority, rest };
+}
+
+function gameIds(value: unknown): string[] | null {
+  if (!Array.isArray(value) || value.length > MAX_BACKLOG) return null;
+  return value.every((item) => typeof item === "string" && UUID.test(item)) ? (value as string[]) : null;
+}
+
+// Priority first; inside each group games without a place yet come first (newest on top), then the owner's order.
+function backlogOrder<T extends { priority: boolean; position: number | null }>(entries: T[]): T[] {
+  return entries
+    .map((entry, index) => ({ entry, index }))
+    .sort(
+      (a, b) =>
+        Number(b.entry.priority) - Number(a.entry.priority) ||
+        (a.entry.position ?? -1) - (b.entry.position ?? -1) ||
+        a.index - b.index,
+    )
+    .map((item) => item.entry);
 }
 
 export async function setFavorite(userId: string, slug: string, favorite: boolean): Promise<void> {
@@ -296,6 +347,7 @@ function toLibraryGame(row: {
   platforms: unknown;
   metacriticScore: number | null;
   playtimeMinutes: number | null;
+  priority?: boolean | null;
 }, includeSteam: boolean): LibraryGame {
   return {
     id: row.id,
@@ -313,6 +365,7 @@ function toLibraryGame(row: {
     finishedAt: row.finishedAt ? row.finishedAt.toISOString() : null,
     metacriticScore: row.metacriticScore,
     steamMinutes: includeSteam ? row.playtimeMinutes : null,
+    priority: row.priority ?? false,
   };
 }
 
