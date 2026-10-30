@@ -4,6 +4,8 @@ export const GAME_LINK_KINDS = [
   "steam",
   "gog",
   "epic",
+  "playstation",
+  "xbox",
   "official",
   "wikipedia",
   "metacritic",

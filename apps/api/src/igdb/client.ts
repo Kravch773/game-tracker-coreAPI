@@ -293,6 +293,7 @@ export type IgdbGameDetail = {
   franchises?: { name?: string }[];
   similar_games?: number[];
   language_supports?: { language?: { locale?: string }; language_support_type?: number }[];
+  external_games?: { external_game_source?: number; url?: string; uid?: string }[];
 };
 
 export type IgdbTimeToBeat = {
@@ -307,7 +308,7 @@ export async function fetchIgdbGame(igdbId: number): Promise<IgdbGameDetail | nu
   }
 
   const body = [
-    "fields storyline,rating,genres.name,screenshots.image_id,videos.video_id,videos.name,themes.name,franchises.name,involved_companies.company.name,involved_companies.developer,involved_companies.publisher,age_ratings.organization,age_ratings.rating_category.rating,similar_games,language_supports.language.locale,language_supports.language_support_type;",
+    "fields storyline,rating,genres.name,screenshots.image_id,videos.video_id,videos.name,themes.name,franchises.name,involved_companies.company.name,involved_companies.developer,involved_companies.publisher,age_ratings.organization,age_ratings.rating_category.rating,similar_games,language_supports.language.locale,language_supports.language_support_type,external_games.external_game_source,external_games.url,external_games.uid;",
     `where id = ${igdbId};`,
   ].join("\n");
 

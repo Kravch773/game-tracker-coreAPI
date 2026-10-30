@@ -1,4 +1,4 @@
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, notInArray, sql } from "drizzle-orm";
 import {
   catalogGenre,
   catalogPlatform,
@@ -12,7 +12,7 @@ import { gameDetails, gameLinks, games, searchCache, type GameDetailRow, type Ga
 import { igdbConfigured } from "../env.js";
 import { fetchIgdbGame, fetchIgdbGameBySlug, fetchTimeToBeat, matchCompanies, matchFranchises, queryIgdbGames, searchIgdb } from "../igdb/client.js";
 import { communityForGame } from "./community.js";
-import { mapIgdbDetails, mapIgdbGame, type MappedGame } from "../igdb/map.js";
+import { STORE_LINK_KINDS, mapIgdbDetails, mapIgdbGame, mapStoreLinks, type MappedGame, type MappedLink } from "../igdb/map.js";
 import { scheduleMetacriticEnrich } from "../rawg/enrich.js";
 import {
   developedByUkrainianStudio,
@@ -84,8 +84,9 @@ export async function getGameBySlug(slug: string): Promise<GameDetails | null> {
   const game = rows[0] ?? (await importBySlug(slug));
   if (!game) return null;
 
-  const links = await db.select().from(gameLinks).where(eq(gameLinks.gameId, game.id));
+  // Details first: loading them also refreshes the console store links.
   const details = await ensureDetails(game);
+  const links = await db.select().from(gameLinks).where(eq(gameLinks.gameId, game.id));
   scheduleMetacriticEnrich(game, links);
   const steamIds = links.flatMap((link) => (link.kind === "steam" && link.externalId ? [link.externalId] : []));
   const developers = details?.developers ?? [];
@@ -124,7 +125,7 @@ async function importBySlug(slug: string): Promise<GameRow | null> {
 
 async function ensureDetails(game: GameRow): Promise<GameDetailRow | null> {
   const existing = await readDetails(game.id);
-  if (existing && existing.detailVersion >= 4 && Date.now() - existing.fetchedAt.getTime() < DETAILS_TTL_MS) {
+  if (existing && existing.detailVersion >= 5 && Date.now() - existing.fetchedAt.getTime() < DETAILS_TTL_MS) {
     return existing;
   }
   if (!igdbConfigured()) return existing;
@@ -158,11 +159,26 @@ async function loadDetails(game: GameRow, existing: GameDetailRow | null): Promi
         set: { ...mapped, fetchedAt: now },
       })
       .returning();
+    await saveStoreLinks(game.id, mapStoreLinks(remote));
     return saved[0] ?? existing;
   } catch (error) {
     console.error("IGDB details failed", error);
     return existing;
   }
+}
+
+async function saveStoreLinks(gameId: string, links: MappedLink[]): Promise<void> {
+  await db.transaction(async (tx) => {
+    await tx
+      .delete(gameLinks)
+      .where(and(eq(gameLinks.gameId, gameId), eq(gameLinks.source, "igdb"), inArray(gameLinks.kind, STORE_LINK_KINDS)));
+    if (links.length > 0) {
+      await tx
+        .insert(gameLinks)
+        .values(links.map((link) => ({ ...link, gameId })))
+        .onConflictDoNothing({ target: [gameLinks.gameId, gameLinks.kind] });
+    }
+  });
 }
 
 async function readFreshCache(key: string): Promise<string[] | null> {
@@ -323,7 +339,7 @@ async function upsertOne(tx: Tx, game: MappedGame, usedSlugs: Set<string>): Prom
 
   await tx
     .delete(gameLinks)
-    .where(and(eq(gameLinks.gameId, current.id), eq(gameLinks.source, "igdb")));
+    .where(and(eq(gameLinks.gameId, current.id), eq(gameLinks.source, "igdb"), notInArray(gameLinks.kind, STORE_LINK_KINDS)));
 
   const kept = await tx
     .select({ kind: gameLinks.kind })

@@ -13,6 +13,8 @@ const LINK_ORDER: GameLinkKind[] = [
   "steam",
   "gog",
   "epic",
+  "playstation",
+  "xbox",
   "official",
   "wikipedia",
   "metacritic",

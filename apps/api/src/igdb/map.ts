@@ -10,6 +10,14 @@ const WEBSITE_KIND: Record<number, GameLinkKind> = {
   17: "gog",
 };
 
+// IGDB external game sources whose pages are console stores; only links to the store itself are kept.
+const STORE_SOURCE: Record<number, { kind: GameLinkKind; host: RegExp }> = {
+  36: { kind: "playstation", host: /^store\.playstation\.com$/ },
+  11: { kind: "xbox", host: /^(www\.)?xbox\.com$/ },
+};
+
+export const STORE_LINK_KINDS: GameLinkKind[] = ["playstation", "xbox"];
+
 export type MappedLink = {
   kind: GameLinkKind;
   url: string;
@@ -107,6 +115,25 @@ function mapLinks(websites: IgdbWebsite[] | undefined): MappedLink[] {
   return links;
 }
 
+export function mapStoreLinks(game: IgdbGameDetail | null): MappedLink[] {
+  const links = new Map<GameLinkKind, MappedLink>();
+  for (const item of game?.external_games ?? []) {
+    const store = item.external_game_source == null ? undefined : STORE_SOURCE[item.external_game_source];
+    const url = item.url?.trim();
+    if (!store || !url || links.has(store.kind)) continue;
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol !== "https:" || !store.host.test(parsed.hostname)) continue;
+      // Without the locale segment both stores open in the visitor's own region.
+      parsed.pathname = parsed.pathname.replace(/^\/[a-z]{2}-[a-z]{2}(?=\/)/i, "");
+      links.set(store.kind, { kind: store.kind, url: parsed.href, externalId: item.uid?.trim() || null, source: "igdb" });
+    } catch {
+      continue;
+    }
+  }
+  return [...links.values()];
+}
+
 export type MappedDetails = {
   storyline: string | null;
   igdbRating: number | null;
@@ -174,7 +201,7 @@ export function mapIgdbDetails(game: IgdbGameDetail | null, beat: IgdbTimeToBeat
     timeToBeat: mapBeat(beat),
     similarIgdbIds: (game?.similar_games ?? []).filter((id) => Number.isInteger(id)).slice(0, 8),
     ...ukrainianSupport(game),
-    detailVersion: 4,
+    detailVersion: 5,
   };
 }
 
