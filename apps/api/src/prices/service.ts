@@ -7,6 +7,7 @@ import {
   type DealSettings,
   type DealsResponse,
   type GamePrices,
+  type LibraryPrices,
   type PriceRegion,
   type PriceStore,
   type StorePrice,
@@ -106,6 +107,52 @@ export async function pricesForGame(slug: string, region: PriceRegion): Promise<
     trackedSince: since,
     steamAppId: target?.stores.steam?.id ?? null,
   };
+}
+
+// Every game in someone's lists and Steam wishlist with the prices on hand. Nothing waits for the stores: prices
+// that are stale or missing are queued, and the next visit shows them.
+const LIBRARY_REFRESH_MS = 60 * 60 * 1000;
+const libraryRefreshed = new Map<string, number>();
+
+export async function pricesForUsername(username: string, region: PriceRegion): Promise<LibraryPrices | null> {
+  const owner = await db.select({ id: users.id }).from(users).where(eq(users.username, username)).limit(1);
+  if (!owner[0]) return null;
+  const userId = owner[0].id;
+  const [listed, wished] = await Promise.all([
+    db.select({ gameId: listEntries.gameId }).from(listEntries).where(eq(listEntries.userId, userId)),
+    db.select({ gameId: steamWishes.gameId }).from(steamWishes).where(eq(steamWishes.userId, userId)),
+  ]);
+  const gameIds = [...new Set([...listed, ...wished].map((row) => row.gameId))];
+  const result: LibraryPrices = { region, games: {} };
+  for (let index = 0; index < gameIds.length; index += 1000) {
+    const rows = await db
+      .select()
+      .from(gamePrices)
+      .where(and(inArray(gamePrices.gameId, gameIds.slice(index, index + 1000)), eq(gamePrices.region, region)));
+    for (const row of rows) {
+      const price = toStorePrice(row);
+      if (price) (result.games[row.gameId] ??= []).push(price);
+    }
+  }
+  for (const stores of Object.values(result.games)) stores.sort((a, b) => PRICE_STORES.indexOf(a.store) - PRICE_STORES.indexOf(b.store));
+
+  const key = `${userId}|${region}`;
+  if (Date.now() - (libraryRefreshed.get(key) ?? 0) > LIBRARY_REFRESH_MS) {
+    libraryRefreshed.set(key, Date.now());
+    void queueLibrary(gameIds, region).catch((error: unknown) => console.error("Library price refresh failed", error));
+  }
+  return result;
+}
+
+async function queueLibrary(gameIds: string[], region: PriceRegion): Promise<void> {
+  for (let index = 0; index < gameIds.length; index += 200) {
+    const targets = await targetsFor(gameIds.slice(index, index + 200));
+    await fillStoreLinks(targets);
+    const checked = await checkedTimes(targets.map((target) => target.gameId), region);
+    for (const job of jobsFor(targets, region, (gameId, store) => Date.now() - (checked.get(`${gameId}|${store}`) ?? 0) > FRESH_MS)) {
+      queueRefresh(job);
+    }
+  }
 }
 
 export async function dealsForUser(userId: string, region: PriceRegion): Promise<DealsResponse> {

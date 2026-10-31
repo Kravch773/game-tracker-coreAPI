@@ -15,7 +15,7 @@ type Log = { info: (message: string) => void; warn: (obj: object, message: strin
 
 let running = false;
 
-// Once a day, every game someone keeps in Want to play or their Steam wishlist, or opened lately, gets its prices
+// Once a day, every game in someone's lists or Steam wishlist, or opened lately, gets its prices
 // checked in both regions, slowly enough to leave the stores' limits to visitors. The day's row lets a restart
 // pick the sweep up where it stopped instead of running it twice.
 export function startPriceSweeps(log: Log): void {
@@ -50,7 +50,7 @@ async function maybeSweep(log: Log): Promise<void> {
 async function sweep(startedAt: Date): Promise<number> {
   const since = new Date(Date.now() - WATCH_DAYS * 24 * 60 * 60 * 1000);
   const [backlog, wished, watched] = await Promise.all([
-    db.selectDistinct({ gameId: listEntries.gameId }).from(listEntries).where(eq(listEntries.status, "backlog")),
+    db.selectDistinct({ gameId: listEntries.gameId }).from(listEntries),
     db.selectDistinct({ gameId: steamWishes.gameId }).from(steamWishes),
     db.select({ gameId: priceWatch.gameId }).from(priceWatch).where(gt(priceWatch.viewedAt, since)),
   ]);

@@ -305,6 +305,9 @@ export type StorePrice = {
   url: string;
 };
 
+// Current prices of every game in someone's lists and Steam wishlist, by game id.
+export type LibraryPrices = { region: PriceRegion; games: Record<string, StorePrice[]> };
+
 export type PricePoint = { day: string; currency: string; amount: number; base: number };
 
 export type GamePrices = {
