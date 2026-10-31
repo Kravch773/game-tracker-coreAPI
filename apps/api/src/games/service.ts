@@ -460,16 +460,18 @@ async function missingIgdbIds(ids: number[]): Promise<number[]> {
   return ids.filter((id) => !have.has(id));
 }
 
+// The prefixes version the cached results: bump them whenever matching or ordering changes. During a deploy the
+// old instance keeps serving and caching for a few minutes, and a new prefix keeps it from refilling the new keys.
 function cacheKey(query: string, filters: SearchFilters): string {
   const base = query.toLowerCase();
   const sort = filters.sort && filters.sort !== "popular" ? filters.sort : "";
   const list = (values: string[] | undefined) => [...(values ?? [])].map((value) => value.toLowerCase()).sort().join(",");
   const lists = `${list(filters.genre)}|${list(filters.platform)}|${filters.year ?? ""}`;
   if (hasCredit(filters)) {
-    return `m1:${base}|${lists}|${list(filters.developer)}~${list(filters.publisher)}~${list(filters.series)}|${sort}`;
+    return `m2:${base}|${lists}|${list(filters.developer)}~${list(filters.publisher)}~${list(filters.series)}|${sort}`;
   }
-  if (!hasFilters(filters)) return sort ? `d5:${base}|${sort}` : `d5:${base}`;
-  const core = `m1:${base}|${lists}`;
+  if (!hasFilters(filters)) return sort ? `d6:${base}|${sort}` : `d6:${base}`;
+  const core = `m2:${base}|${lists}`;
   return sort ? `${core}|${sort}` : core;
 }
 
