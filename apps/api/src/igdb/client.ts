@@ -4,6 +4,7 @@ import type { IgdbGame } from "./map.js";
 const TOKEN_URL = "https://id.twitch.tv/oauth2/token";
 const GAMES_URL = "https://api.igdb.com/v4/games";
 const EXTERNAL_URL = "https://api.igdb.com/v4/external_games";
+const ALTERNATIVE_URL = "https://api.igdb.com/v4/alternative_names";
 const COMPANIES_URL = "https://api.igdb.com/v4/companies";
 const FRANCHISES_URL = "https://api.igdb.com/v4/franchises";
 const TIME_URL = "https://api.igdb.com/v4/game_time_to_beats";
@@ -36,6 +37,24 @@ export async function searchIgdb(query: string, limit = 20): Promise<IgdbGame[]>
     if (typeof game.id === "number" && !byId.has(game.id)) byId.set(game.id, game);
   }
   return [...byId.values()];
+}
+
+// Games known by another name that is exactly one of the terms, ignoring case: acronyms such as "GTA V", "RDR2"
+// or "TLoU" live among IGDB's alternative names, not in the titles a name search looks at.
+export async function searchAlternativeNames(terms: string[], limit = 20): Promise<IgdbGame[]> {
+  const quoted = [...new Set(terms.map((term) => term.replace(/["\\*\n\r;]/g, "").trim().slice(0, 80)).filter((term) => term.length >= 2))];
+  if (quoted.length === 0) return [];
+  const where = quoted.map((term) => `name ~ "${term}"`).join(" | ");
+  const payload = await postIgdb(ALTERNATIVE_URL, `fields game; where ${where}; limit 50;`, "IGDB alternative names");
+  if (!Array.isArray(payload)) return [];
+  const ids = [...new Set(payload.flatMap((row: { game?: unknown }) => (typeof row?.game === "number" ? [row.game] : [])))];
+  if (ids.length === 0) return [];
+  return gamesFrom(
+    await postGames(
+      [SEARCH_FIELDS, `where id = (${ids.join(",")}) & game_type = (${SEARCH_TYPES}) & version_parent = null;`, `limit ${limit};`].join("\n"),
+      "IGDB alternative name games",
+    ),
+  );
 }
 
 export async function queryIgdbGames(body: string): Promise<IgdbGame[]> {

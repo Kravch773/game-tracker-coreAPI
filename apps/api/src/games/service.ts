@@ -10,7 +10,7 @@ import {
 import { db } from "../db/client.js";
 import { gameDetails, gameLinks, games, searchCache, type GameDetailRow, type GameRow } from "../db/schema.js";
 import { igdbConfigured } from "../env.js";
-import { fetchIgdbGame, fetchIgdbGameBySlug, fetchTimeToBeat, matchCompanies, matchFranchises, queryIgdbGames, searchIgdb } from "../igdb/client.js";
+import { fetchIgdbGame, fetchIgdbGameBySlug, fetchTimeToBeat, matchCompanies, matchFranchises, queryIgdbGames, searchAlternativeNames, searchIgdb } from "../igdb/client.js";
 import { communityForGame } from "./community.js";
 import { STORE_LINK_KINDS, mapIgdbDetails, mapIgdbGame, mapStoreLinks, type MappedGame, type MappedLink } from "../igdb/map.js";
 import { scheduleMetacriticEnrich } from "../rawg/enrich.js";
@@ -23,7 +23,7 @@ import {
 } from "./origin.js";
 import { originsFor } from "../steam/curators.js";
 import { toDetails, toSummary } from "./present.js";
-import { loose, looseIncludes } from "./text.js";
+import { loose, looseIncludes, matchScore, matchTier, queryVariants } from "./text.js";
 
 const PAGE_SIZE = 20;
 const SEARCH_POOL = 60;
@@ -56,21 +56,42 @@ export async function searchGames(
   if (cachedIds) return pageOf(cachedIds, start);
 
   const needle = query.toLowerCase();
-  const local = needle.length >= 2 ? await searchLocal(needle) : [];
+  // "Baldur's Gate 3" is stored as "Baldur's Gate III", "Ratchet & Clank" gets typed with "and": the query also
+  // runs in its other spellings.
+  const variants = needle.length >= 2 ? queryVariants(needle) : [];
+  const local = needle.length >= 2 ? uniqueById((await Promise.all([needle, ...variants].map((term) => searchLocal(term)))).flat()) : [];
   const titled = local.filter((game) => looseIncludes(game.title, needle) && matchesLocal(game, filters));
   if (!igdbConfigured()) return pageOf(sortedLocalIds(titled, filters.sort), start);
 
   try {
     const ordered = filtered || filters.sort === "release" || filters.sort === "title";
-    const remote = ordered ? await queryIgdbGames(filteredQuery(query, filters, SEARCH_POOL, clauses)) : await searchIgdb(query, SEARCH_POOL);
-    const named = needle.length >= 2 ? remote.filter((game) => looseIncludes(game.name ?? "", needle)) : remote;
-    const ids = await upsertIgdbGames(orderRemote(named, filters.sort));
+    const lookup = (term: string) =>
+      ordered ? queryIgdbGames(filteredQuery(term, filters, SEARCH_POOL, clauses)) : searchIgdb(term, SEARCH_POOL);
+    // Acronyms ("gta 5", "rdr2") only exist as IGDB alternative names; a game found that way needs no title match.
+    const [found, aliased] = await Promise.all([
+      Promise.all([query, ...variants].map(lookup)).then((lists) => lists.flat()),
+      !ordered && needle.length >= 2
+        ? searchAlternativeNames([query, ...variants]).catch((error: unknown) => {
+            console.error("IGDB alternative names failed", error);
+            return [];
+          })
+        : Promise.resolve([]),
+    ]);
+    const aliasIds = new Set(aliased.map((game) => game.id));
+    const remote = uniqueById([...aliased, ...found]);
+    const named = needle.length >= 2 ? remote.filter((game) => aliasIds.has(game.id) || looseIncludes(game.name ?? "", needle)) : remote;
+    // A game found by an alternative name ranks like one whose title starts with the query, not like an exact title.
+    const scoreOf = (game: Parameters<typeof mapIgdbGame>[0]) =>
+      matchScore(aliasIds.has(game.id) ? 1 : matchTier(game.name ?? "", needle), popularityOf(game));
+    const byScore = !(filters.sort === "release" || filters.sort === "title") && needle.length >= 2;
+    const ranked = byScore ? rankByScore(named, scoreOf) : orderRemote(named, filters.sort);
+    const ids = await upsertIgdbGames(ranked);
     const seen = new Set(ids);
-    const extra = titled
-      .filter((game) => !seen.has(game.id))
-      .sort(byReleaseDesc)
-      .map((game) => game.id);
-    const result = [...ids, ...extra];
+    const extra = titled.filter((game) => !seen.has(game.id)).sort(byReleaseDesc);
+    // Local games IGDB did not return carry no popularity, so they rank on how closely their title matches alone.
+    const result = byScore
+      ? mergeByScore(ids, ranked.map(scoreOf), extra.map((game) => ({ id: game.id, score: matchScore(matchTier(game.title, needle), 0) })))
+      : [...ids, ...extra.map((game) => game.id)];
     await writeCache(key, result);
     return pageOf(result, start);
   } catch (error) {
@@ -181,6 +202,16 @@ async function saveStoreLinks(gameId: string, links: MappedLink[]): Promise<void
   });
 }
 
+function uniqueById<T extends { id?: string | number }>(items: T[]): T[] {
+  const seen = new Set<string | number>();
+  return items.filter((item) => {
+    if (item.id == null) return true;
+    if (seen.has(item.id)) return false;
+    seen.add(item.id);
+    return true;
+  });
+}
+
 async function readFreshCache(key: string): Promise<string[] | null> {
   const rows = await db.select().from(searchCache).where(eq(searchCache.query, key)).limit(1);
   const cached = rows[0];
@@ -246,6 +277,24 @@ function orderRemote(
     return [...remote].sort((a, b) => (a.name ?? "").localeCompare(b.name ?? ""));
   }
   return rankRemote(remote);
+}
+
+// Closest and most popular first: "Ori and the Blind Forest" before "Horizon Zero Dawn" for "ori", "Half-Life 2"
+// before a mod named after it.
+function rankByScore(
+  remote: Parameters<typeof mapIgdbGame>[0][],
+  scoreOf: (game: Parameters<typeof mapIgdbGame>[0]) => number,
+): Parameters<typeof mapIgdbGame>[0][] {
+  const scores = new Map(remote.map((game) => [game, scoreOf(game)]));
+  return [...remote].sort((a, b) => (scores.get(b) ?? 0) - (scores.get(a) ?? 0) || (b.first_release_date ?? 0) - (a.first_release_date ?? 0));
+}
+
+// upsertIgdbGames keeps the order it is given, so ids[i] belongs to scores[i]; if it skipped a game the lists no
+// longer line up and the local games simply go last.
+function mergeByScore(ids: string[], scores: number[], extra: { id: string; score: number }[]): string[] {
+  if (ids.length !== scores.length) return [...ids, ...extra.map((game) => game.id)];
+  const items = [...ids.map((id, index) => ({ id, score: scores[index], order: index })), ...extra.map((game, index) => ({ ...game, order: ids.length + index }))];
+  return items.sort((a, b) => b.score - a.score || a.order - b.order).map((item) => item.id);
 }
 
 function rankRemote(remote: Parameters<typeof mapIgdbGame>[0][]): Parameters<typeof mapIgdbGame>[0][] {
