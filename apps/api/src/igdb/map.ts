@@ -18,8 +18,9 @@ const STORE_SOURCE: Record<number, { kind: GameLinkKind; host: RegExp }> = {
 };
 
 export const STORE_LINK_KINDS: GameLinkKind[] = ["playstation", "xbox", "gog"];
-// GOG also comes as a plain website link, which stays when IGDB lists no GOG product for the game.
-export const CONSOLE_LINK_KINDS: GameLinkKind[] = ["playstation", "xbox"];
+// GOG also comes as a plain website link and Xbox from a search of the Microsoft catalog, so those stay until IGDB
+// gives one of its own.
+export const REPLACED_LINK_KINDS: GameLinkKind[] = ["playstation"];
 
 export type MappedLink = {
   kind: GameLinkKind;

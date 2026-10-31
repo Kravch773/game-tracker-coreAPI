@@ -221,6 +221,27 @@ async function xboxMarketOffers(ids: string[], region: PriceRegion): Promise<Map
   return offers;
 }
 
+type XboxSuggestion = { ProductId?: string; Type?: string; Title?: string };
+
+// Games the Microsoft catalog suggests for a title, for games IGDB knows on Xbox but has no store page for.
+export async function xboxSearch(title: string): Promise<{ id: string; title: string }[]> {
+  const url = `https://displaycatalog.mp.microsoft.com/v7.0/productFamilies/autosuggest?market=US&languages=en-us&productFamilyNames=Games&query=${encodeURIComponent(title)}`;
+  const response = await fetch(url, { signal: AbortSignal.timeout(10000) });
+  if (response.status === 429 || response.status === 403) throw new StoreLimitError(response.status, response.headers.get("retry-after"));
+  if (!response.ok) throw new Error(`Xbox Store search failed with ${response.status}`);
+  const payload = (await response.json()) as { Results?: { Products?: XboxSuggestion[] }[] } | null;
+  return (payload?.Results ?? []).flatMap((result) =>
+    (result.Products ?? []).flatMap((product) =>
+      product.Type === "Game" && product.ProductId && product.Title ? [{ id: product.ProductId, title: product.Title }] : [],
+    ),
+  );
+}
+
+export function xboxStoreUrl(id: string, title: string): string {
+  const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "game";
+  return `https://www.xbox.com/games/store/${slug}/${id}`;
+}
+
 const GOG_COUNTRY: Record<PriceRegion, string> = { ua: "UA", us: "US" };
 export const GOG_BATCH = 25;
 

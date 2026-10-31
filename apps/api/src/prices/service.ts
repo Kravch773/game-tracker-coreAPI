@@ -18,7 +18,8 @@ import { igdbConfigured } from "../env.js";
 import { storeExternalsFor } from "../igdb/client.js";
 import { mapStoreLinks } from "../igdb/map.js";
 import { toSummary } from "../games/present.js";
-import { GOG_BATCH, STEAM_BATCH, XBOX_BATCH, gogOffers, playstationOffer, psStoreUrl, steamOffers, steamStoreUrl, xboxOffers, type Offer } from "./fetch.js";
+import { loose, searchForm } from "../games/text.js";
+import { GOG_BATCH, STEAM_BATCH, XBOX_BATCH, gogOffers, playstationOffer, psStoreUrl, steamOffers, steamStoreUrl, xboxOffers, xboxSearch, xboxStoreUrl, type Offer } from "./fetch.js";
 import { StoreBusyError, StoreLimitError, gogGate, playstationGate, sleep, steamGate, xboxGate, type StoreGate } from "./gate.js";
 
 // The daily sweep keeps prices fresh; a visitor's request only refreshes a price the sweep has not touched for a day.
@@ -43,7 +44,13 @@ function cheaper(row: PriceRow, than: PriceRow, region: PriceRegion): boolean {
   return (row.amount ?? Infinity) < (than.amount ?? Infinity);
 }
 
-export type Target = { gameId: string; igdbId: number; stores: Partial<Record<PriceStore, { id: string; url: string }>> };
+export type Target = {
+  gameId: string;
+  igdbId: number;
+  title: string;
+  platforms: string[];
+  stores: Partial<Record<PriceStore, { id: string; url: string }>>;
+};
 type PriceRow = typeof gamePrices.$inferSelect;
 
 export function parseRegion(value: unknown): PriceRegion {
@@ -215,7 +222,10 @@ function toStorePrice(row: PriceRow): StorePrice | null {
 export async function targetsFor(gameIds: string[]): Promise<Target[]> {
   if (gameIds.length === 0) return [];
   const [rows, links] = await Promise.all([
-    db.select({ id: games.id, igdbId: games.igdbId }).from(games).where(inArray(games.id, gameIds)),
+    db
+      .select({ id: games.id, igdbId: games.igdbId, title: games.title, platforms: games.platforms })
+      .from(games)
+      .where(inArray(games.id, gameIds)),
     db
       .select({ gameId: gameLinks.gameId, kind: gameLinks.kind, externalId: gameLinks.externalId, url: gameLinks.url })
       .from(gameLinks)
@@ -226,7 +236,7 @@ export async function targetsFor(gameIds: string[]): Promise<Target[]> {
     for (const link of links) {
       if (link.gameId === row.id && link.externalId) stores[link.kind as PriceStore] = { id: link.externalId, url: link.url };
     }
-    return { gameId: row.id, igdbId: row.igdbId, stores };
+    return { gameId: row.id, igdbId: row.igdbId, title: row.title, platforms: row.platforms, stores };
   });
 }
 
@@ -264,6 +274,39 @@ export async function fillStoreLinks(targets: Target[]): Promise<void> {
   } catch (error) {
     console.error("Store link lookup failed", error);
   }
+  await findXboxPages(missing);
+}
+
+// IGDB lists the Xbox among a game's platforms well before it adds the store page, so the Microsoft catalog is
+// asked for a game of exactly that title; editions, demos and add-ons have titles of their own and are left out.
+const XBOX_SEARCHES_PER_CALL = 20;
+
+async function findXboxPages(targets: Target[]): Promise<void> {
+  const wanted = targets.filter((target) => !target.stores.xbox && target.platforms.some((name) => /xbox/i.test(name)));
+  for (const [index, target] of wanted.entries()) {
+    // The rest wait for the next call instead of keeping this one busy.
+    if (index >= XBOX_SEARCHES_PER_CALL) {
+      storeLinksChecked.delete(target.gameId);
+      continue;
+    }
+    try {
+      const match = (await xboxSearch(target.title)).find((product) => sameTitle(product.title, target.title));
+      if (!match) continue;
+      const link = { kind: "xbox" as const, url: xboxStoreUrl(match.id, match.title), externalId: match.id, source: "igdb" as const };
+      await db
+        .insert(gameLinks)
+        .values({ ...link, gameId: target.gameId })
+        .onConflictDoNothing({ target: [gameLinks.gameId, gameLinks.kind] });
+      target.stores.xbox = { id: match.id, url: link.url };
+    } catch (error) {
+      console.error(`Xbox Store search for ${target.title} failed`, error);
+      if (error instanceof StoreLimitError) return;
+    }
+  }
+}
+
+function sameTitle(a: string, b: string): boolean {
+  return loose(searchForm(a)) === loose(searchForm(b));
 }
 
 // Steam, GOG and the Xbox Store answer for many games in one request; the PlayStation Store one page at a time.
