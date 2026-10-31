@@ -166,26 +166,35 @@ const XBOX_MARKET: Record<PriceRegion, string> = { ua: "UA", us: "US" };
 type XboxAvailability = {
   Actions?: string[];
   RemediationRequired?: boolean;
-  Conditions?: { EndDate?: string };
+  Conditions?: { EndDate?: string; ClientConditions?: { AllowedPlatforms?: { PlatformName?: string }[] } };
   OrderManagementData?: { Price?: { CurrencyCode?: string; ListPrice?: number; MSRP?: number } };
 };
 type XboxProduct = { ProductId?: string; DisplaySkuAvailabilities?: { Availabilities?: XboxAvailability[] }[] };
 
-// The Microsoft Store catalog answers for many products at once. A product's offer is its cheapest purchase that
-// needs no subscription (Game Pass discounts come as availabilities to remediate first). The Ukrainian store sells
-// mostly games that also run on PC and lists console-only ones with nothing to buy; players in Ukraine buy those
-// on a US account, so such a game gets its US price in dollars.
-export async function xboxOffers(bigIds: string[], region: PriceRegion): Promise<Map<string, Offer | null>> {
+// A product's offers on Xbox consoles and on Windows PCs; a game sold for both (Xbox Play Anywhere) has the same
+// price on each, a console-only game has no PC offer.
+export type XboxOffer = { console: Offer | null; pc: Offer | null };
+
+const XBOX_PLATFORMS: Record<keyof XboxOffer, string> = { console: "Windows.Xbox", pc: "Windows.Desktop" };
+
+// The Microsoft Store catalog answers for many products at once. A product's offer on each platform is its cheapest
+// purchase there that needs no subscription (Game Pass discounts come as availabilities to remediate first). The
+// Ukrainian store lists some games with nothing to buy (console-only ones mostly); players in Ukraine buy those on
+// a US account, so such a game gets its US price in dollars.
+export async function xboxOffers(bigIds: string[], region: PriceRegion): Promise<Map<string, XboxOffer>> {
   const ids = bigIds.filter((id) => /^[0-9A-Z]{12}$/.test(id));
   const offers = await xboxMarketOffers(ids, region);
   if (region === "us") return offers;
-  const unsold = ids.filter((id) => offers.has(id) && offers.get(id) == null);
-  for (const [id, offer] of await xboxMarketOffers(unsold, "us")) if (offer) offers.set(id, offer);
+  const unsold = ids.filter((id) => {
+    const offer = offers.get(id);
+    return offer && !offer.console && !offer.pc;
+  });
+  for (const [id, offer] of await xboxMarketOffers(unsold, "us")) offers.set(id, offer);
   return offers;
 }
 
-async function xboxMarketOffers(ids: string[], region: PriceRegion): Promise<Map<string, Offer | null>> {
-  const offers = new Map<string, Offer | null>();
+async function xboxMarketOffers(ids: string[], region: PriceRegion): Promise<Map<string, XboxOffer>> {
+  const offers = new Map<string, XboxOffer>();
   for (let index = 0; index < ids.length; index += XBOX_BATCH) {
     const chunk = ids.slice(index, index + XBOX_BATCH);
     const url = `https://displaycatalog.mp.microsoft.com/v7.0/products?bigIds=${chunk.join(",")}&market=${XBOX_MARKET[region]}&languages=en-us&MS-CV=DGU1mcuYo0WMMp`;
@@ -195,7 +204,7 @@ async function xboxMarketOffers(ids: string[], region: PriceRegion): Promise<Map
     const payload = (await response.json()) as { Products?: XboxProduct[] } | null;
     for (const product of payload?.Products ?? []) {
       if (!product.ProductId) continue;
-      let best: Offer | null = null;
+      const best: XboxOffer = { console: null, pc: null };
       for (const sku of product.DisplaySkuAvailabilities ?? []) {
         for (const availability of sku.Availabilities ?? []) {
           const price = availability.OrderManagementData?.Price;
@@ -203,9 +212,8 @@ async function xboxMarketOffers(ids: string[], region: PriceRegion): Promise<Map
           if (typeof price.ListPrice !== "number" || price.ListPrice <= 0) continue;
           const amount = Math.round(price.ListPrice * 100);
           const base = Math.max(amount, Math.round((price.MSRP ?? 0) * 100));
-          if (best && best.amount <= amount) continue;
           const end = availability.Conditions?.EndDate ? new Date(availability.Conditions.EndDate) : null;
-          best = {
+          const offer: Offer = {
             currency: price.CurrencyCode,
             amount,
             base,
@@ -213,6 +221,12 @@ async function xboxMarketOffers(ids: string[], region: PriceRegion): Promise<Map
             // Full-price availabilities run until a far-off date (or year 9998), which says nothing about a sale.
             endsAt: base > amount && end && end.getUTCFullYear() < 9000 ? end : null,
           };
+          // An availability that names no platform is good on any.
+          const platforms = (availability.Conditions?.ClientConditions?.AllowedPlatforms ?? []).map((platform) => platform.PlatformName);
+          for (const kind of ["console", "pc"] as const) {
+            if (platforms.length > 0 && !platforms.includes(XBOX_PLATFORMS[kind])) continue;
+            if (!best[kind] || offer.amount < (best[kind] as Offer).amount) best[kind] = offer;
+          }
         }
       }
       offers.set(product.ProductId, best);

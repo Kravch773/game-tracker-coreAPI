@@ -286,7 +286,8 @@ export type BacklogOrder = {
 // dollars for en.
 export const PRICE_REGIONS = ["ua", "us"] as const;
 export type PriceRegion = (typeof PRICE_REGIONS)[number];
-export const PRICE_STORES = ["steam", "gog", "playstation", "xbox"] as const;
+// The Xbox Store is two stores here: "xbox" for consoles and "xboxpc" for Windows, each with its own price history.
+export const PRICE_STORES = ["steam", "gog", "playstation", "xbox", "xboxpc"] as const;
 export type PriceStore = (typeof PRICE_STORES)[number];
 
 export function priceRegionFor(locale: string): PriceRegion {
@@ -304,11 +305,15 @@ export type StorePrice = {
   url: string;
 };
 
+export type PricePoint = { day: string; currency: string; amount: number; base: number };
+
 export type GamePrices = {
   region: PriceRegion;
   stores: StorePrice[];
   // The lowest price GameTracker itself has recorded in this region, across stores.
   lowest: { store: PriceStore; currency: string; amount: number; seenOn: string } | null;
+  // Each store's daily lowest price, oldest first.
+  history: Partial<Record<PriceStore, PricePoint[]>>;
   trackedSince: string | null;
   steamAppId: string | null;
 };

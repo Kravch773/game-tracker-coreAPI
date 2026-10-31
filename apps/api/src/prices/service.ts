@@ -91,6 +91,10 @@ export async function pricesForGame(slug: string, region: PriceRegion): Promise<
     null,
   );
   const since = history.reduce<string | null>((first, row) => (!first || row.seenOn < first ? row.seenOn : first), null);
+  const byStore: GamePrices["history"] = {};
+  for (const row of [...history].sort((a, b) => (a.seenOn < b.seenOn ? -1 : 1))) {
+    (byStore[row.store as PriceStore] ??= []).push({ day: row.seenOn, currency: row.currency, amount: row.amount, base: row.base });
+  }
 
   return {
     region,
@@ -98,6 +102,7 @@ export async function pricesForGame(slug: string, region: PriceRegion): Promise<
     lowest: lowestRow
       ? { store: lowestRow.store as PriceStore, currency: lowestRow.currency, amount: lowestRow.amount, seenOn: lowestRow.seenOn }
       : null,
+    history: byStore,
     trackedSince: since,
     steamAppId: target?.stores.steam?.id ?? null,
   };
@@ -311,12 +316,19 @@ function sameTitle(a: string, b: string): boolean {
 
 // Steam, GOG and the Xbox Store answer for many games in one request; the PlayStation Store one page at a time.
 type BatchStore = "steam" | "gog" | "xbox";
+// Xbox console and PC prices come from one request about the console store's product.
 const BATCH: Record<BatchStore, number> = { steam: STEAM_BATCH, gog: GOG_BATCH, xbox: XBOX_BATCH };
-const GATES: Record<PriceStore, StoreGate> = { steam: steamGate, xbox: xboxGate, playstation: playstationGate, gog: gogGate };
-const STORE_NAMES: Record<PriceStore, string> = { steam: "Steam", xbox: "Xbox Store", playstation: "PlayStation Store", gog: "GOG" };
+const GATES: Record<PriceStore, StoreGate> = { steam: steamGate, xbox: xboxGate, xboxpc: xboxGate, playstation: playstationGate, gog: gogGate };
+const STORE_NAMES: Record<PriceStore, string> = {
+  steam: "Steam",
+  xbox: "Xbox Store",
+  xboxpc: "Xbox Store",
+  playstation: "PlayStation Store",
+  gog: "GOG",
+};
 
 function isBatchStore(store: PriceStore): store is BatchStore {
-  return store !== "playstation";
+  return store === "steam" || store === "gog" || store === "xbox";
 }
 
 export function batchSize(store: PriceStore): number {
@@ -390,7 +402,17 @@ export async function runJobs(store: PriceStore, jobs: QueueJob[], region: Price
   try {
     if (isBatchStore(store)) {
       const ids = jobs.map((job) => job.externalId);
-      const offers = await (store === "steam" ? steamOffers : store === "gog" ? gogOffers : xboxOffers)(ids, region);
+      if (store === "xbox") {
+        const offers = await xboxOffers(ids, region);
+        for (const job of jobs) {
+          const offer = offers.get(job.externalId);
+          if (!offer) continue;
+          await save(job.gameId, "xbox", region, offer.console, job.url);
+          await save(job.gameId, "xboxpc", region, offer.pc, job.url);
+        }
+        return true;
+      }
+      const offers = await (store === "steam" ? steamOffers : gogOffers)(ids, region);
       for (const job of jobs) {
         if (!offers.has(job.externalId)) continue;
         await save(job.gameId, store, region, offers.get(job.externalId) ?? null, store === "steam" ? steamStoreUrl(job.externalId) : job.url);
