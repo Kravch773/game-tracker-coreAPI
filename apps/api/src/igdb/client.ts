@@ -39,19 +39,26 @@ export async function searchIgdb(query: string, limit = 20): Promise<IgdbGame[]>
   return [...byId.values()];
 }
 
-// Games known by another name that is exactly one of the terms, ignoring case: acronyms such as "GTA V", "RDR2"
-// or "TLoU" live among IGDB's alternative names, not in the titles a name search looks at.
-export async function searchAlternativeNames(terms: string[], limit = 20): Promise<IgdbGame[]> {
+// Games known by another name, ignoring case: acronyms such as "GTA V", "RDR2" or "TLoU" live among IGDB's
+// alternative names, not in the titles a name search looks at. A name must be one of the terms, or, for a lone
+// acronym like "gta", start with it as a word ("GTA V", "GTA: San Andreas", not "GTAP").
+export async function searchAlternativeNames(terms: string[], limit = 30): Promise<IgdbGame[]> {
   const quoted = [...new Set(terms.map((term) => term.replace(/["\\*\n\r;]/g, "").trim().slice(0, 80)).filter((term) => term.length >= 2))];
   if (quoted.length === 0) return [];
-  const where = quoted.map((term) => `name ~ "${term}"`).join(" | ");
-  const payload = await postIgdb(ALTERNATIVE_URL, `fields game; where ${where}; limit 50;`, "IGDB alternative names");
+  const acronyms = quoted.filter((term) => /^[\p{L}\p{N}]{2,6}$/u.test(term));
+  const where = [...quoted.map((term) => `name ~ "${term}"`), ...acronyms.map((term) => `name ~ "${term} "* | name ~ "${term}:"*`)].join(" | ");
+  const payload = await postIgdb(ALTERNATIVE_URL, `fields game,name; where ${where}; limit 200;`, "IGDB alternative names");
   if (!Array.isArray(payload)) return [];
   const ids = [...new Set(payload.flatMap((row: { game?: unknown }) => (typeof row?.game === "number" ? [row.game] : [])))];
   if (ids.length === 0) return [];
   return gamesFrom(
     await postGames(
-      [SEARCH_FIELDS, `where id = (${ids.join(",")}) & game_type = (${SEARCH_TYPES}) & version_parent = null;`, `limit ${limit};`].join("\n"),
+      [
+        SEARCH_FIELDS,
+        `where id = (${ids.slice(0, 200).join(",")}) & game_type = (${SEARCH_TYPES}) & version_parent = null;`,
+        "sort total_rating_count desc;",
+        `limit ${limit};`,
+      ].join("\n"),
       "IGDB alternative name games",
     ),
   );

@@ -20,6 +20,8 @@ export function looseIncludes(value: string, needle: string): boolean {
   const query = searchForm(needle.trim());
   if (query.length < 2) return false;
   const title = searchForm(value);
+  // A few letters turn up inside all sorts of words ("gta" in "SpringTale"), so a short query must start a word.
+  if (loose(query).length < 4) return matchTier(value, needle) < 3;
   if (title.includes(query)) return true;
   const folded = loose(query);
   if (folded.length >= 2 && loose(title).includes(folded)) return true;
