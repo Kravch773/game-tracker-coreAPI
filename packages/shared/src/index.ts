@@ -283,7 +283,7 @@ export type BacklogOrder = {
 };
 
 // Store prices: Ukrainian stores for the uk locale (hryvnias, though GOG prices Ukraine in dollars), US stores in
-// dollars for en. The Xbox Store does not sell in Ukraine, so it has US prices only.
+// dollars for en.
 export const PRICE_REGIONS = ["ua", "us"] as const;
 export type PriceRegion = (typeof PRICE_REGIONS)[number];
 export const PRICE_STORES = ["steam", "gog", "playstation", "xbox"] as const;

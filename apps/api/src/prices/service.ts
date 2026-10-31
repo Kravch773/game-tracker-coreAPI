@@ -266,18 +266,13 @@ export function batchSize(store: PriceStore): number {
   return isBatchStore(store) ? BATCH[store] : 1;
 }
 
-// The Xbox Store does not sell in Ukraine.
-function sellsIn(store: PriceStore, region: PriceRegion): boolean {
-  return store !== "xbox" || region === "us";
-}
-
 export type QueueJob = { store: PriceStore; gameId: string; externalId: string; url: string; region: PriceRegion };
 
 export function jobsFor(targets: Target[], region: PriceRegion, wanted: (gameId: string, store: PriceStore) => boolean): QueueJob[] {
   return targets.flatMap((target) =>
     PRICE_STORES.flatMap((store) => {
       const link = target.stores[store];
-      return link && sellsIn(store, region) && wanted(target.gameId, store)
+      return link && wanted(target.gameId, store)
         ? [{ store, gameId: target.gameId, externalId: link.id, url: link.url, region }]
         : [];
     }),
