@@ -347,6 +347,7 @@ export const en = {
     none: "No prices for this game yet.",
     until: "Sale ends {date}",
     full: "Full price",
+    usPrice: "US price: not sold in Ukraine",
     open: "Open in {store}",
     lowest: "Lowest we have seen: {price}, {store}, {date}",
     tracked: "GameTracker has been recording prices since {date}.",

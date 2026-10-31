@@ -345,6 +345,7 @@ export const uk = {
     none: "Цін для цієї гри поки немає.",
     until: "Знижка до {date}",
     full: "Повна ціна",
+    usPrice: "Ціна США: в Україні не продається",
     open: "Відкрити в {store}",
     lowest: "Найнижча ціна, яку ми бачили: {price}, {store}, {date}",
     tracked: "GameTracker записує ціни з {date}.",

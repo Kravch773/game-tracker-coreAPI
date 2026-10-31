@@ -32,7 +32,16 @@ const PAGES_INLINE = 3;
 const STORE_LINK_RECHECK_MS = 7 * 24 * 60 * 60 * 1000;
 const LOWEST_AFTER_MS = 14 * 24 * 60 * 60 * 1000;
 
+const REGION_CURRENCY: Record<PriceRegion, string> = { ua: "UAH", us: "USD" };
+
 export class PriceInputError extends Error {}
+
+// The better deal of two stores: the region's own currency first, then the lower price.
+function cheaper(row: PriceRow, than: PriceRow, region: PriceRegion): boolean {
+  const local = (price: PriceRow) => price.currency === REGION_CURRENCY[region];
+  if (local(row) !== local(than)) return local(row);
+  return (row.amount ?? Infinity) < (than.amount ?? Infinity);
+}
 
 export type Target = { gameId: string; igdbId: number; stores: Partial<Record<PriceStore, { id: string; url: string }>> };
 type PriceRow = typeof gamePrices.$inferSelect;
@@ -67,7 +76,10 @@ export async function pricesForGame(slug: string, region: PriceRegion): Promise<
     .select()
     .from(priceHistory)
     .where(and(eq(priceHistory.gameId, game.id), eq(priceHistory.region, region)));
-  const lowestRow = history.reduce<(typeof history)[number] | null>(
+  // Stores price a region in different currencies (GOG Ukraine in dollars), so only the region's own currency is
+  // compared, unless no store uses it.
+  const local = history.filter((row) => row.currency === REGION_CURRENCY[region]);
+  const lowestRow = (local.length > 0 ? local : history).reduce<(typeof history)[number] | null>(
     (best, row) => (!best || row.amount < best.amount || (row.amount === best.amount && row.seenOn > best.seenOn) ? row : best),
     null,
   );
@@ -109,7 +121,7 @@ export async function dealsForUser(userId: string, region: PriceRegion): Promise
   for (const row of prices) {
     if (row.amount == null || row.cut < Math.max(1, settings.minCut)) continue;
     const current = best.get(row.gameId);
-    if (!current || (current.amount ?? Infinity) > row.amount) best.set(row.gameId, row);
+    if (!current || cheaper(row, current, region)) best.set(row.gameId, row);
   }
   if (best.size === 0) return { region, deals: [], newCount: 0, settings };
 
@@ -117,21 +129,23 @@ export async function dealsForUser(userId: string, region: PriceRegion): Promise
   const [gameRows, lows] = await Promise.all([
     db.select().from(games).where(inArray(games.id, ids)),
     db
-      .select({ gameId: priceHistory.gameId, amount: min(priceHistory.amount), since: min(priceHistory.seenOn) })
+      .select({ gameId: priceHistory.gameId, currency: priceHistory.currency, amount: min(priceHistory.amount), since: min(priceHistory.seenOn) })
       .from(priceHistory)
       .where(and(inArray(priceHistory.gameId, ids), eq(priceHistory.region, region)))
-      .groupBy(priceHistory.gameId),
+      .groupBy(priceHistory.gameId, priceHistory.currency),
   ]);
   // "Lowest" means something only once the history is long enough to have seen other prices.
   const trackedBefore = new Date(Date.now() - LOWEST_AFTER_MS).toISOString().slice(0, 10);
-  const lowOf = new Map(lows.flatMap((row) => (row.since && row.since <= trackedBefore ? [[row.gameId, row.amount] as const] : [])));
+  const lowOf = new Map(
+    lows.flatMap((row) => (row.since && row.since <= trackedBefore ? [[`${row.gameId}|${row.currency}`, row.amount] as const] : [])),
+  );
   const seenAt = settingsRow?.dealsSeenAt ?? null;
 
   const deals: Deal[] = gameRows.flatMap((game) => {
     const row = best.get(game.id);
     const price = row ? toStorePrice(row) : null;
     if (!row || !price) return [];
-    const low = lowOf.get(game.id);
+    const low = lowOf.get(`${game.id}|${price.currency}`);
     return [
       {
         game: toSummary(game),

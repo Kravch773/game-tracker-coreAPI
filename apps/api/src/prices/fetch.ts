@@ -172,11 +172,20 @@ type XboxAvailability = {
 type XboxProduct = { ProductId?: string; DisplaySkuAvailabilities?: { Availabilities?: XboxAvailability[] }[] };
 
 // The Microsoft Store catalog answers for many products at once. A product's offer is its cheapest purchase that
-// needs no subscription (Game Pass discounts come as availabilities to remediate first). Some publishers keep
-// their games out of the Ukrainian store, which then lists them with no purchase at all.
+// needs no subscription (Game Pass discounts come as availabilities to remediate first). The Ukrainian store sells
+// mostly games that also run on PC and lists console-only ones with nothing to buy; players in Ukraine buy those
+// on a US account, so such a game gets its US price in dollars.
 export async function xboxOffers(bigIds: string[], region: PriceRegion): Promise<Map<string, Offer | null>> {
-  const offers = new Map<string, Offer | null>();
   const ids = bigIds.filter((id) => /^[0-9A-Z]{12}$/.test(id));
+  const offers = await xboxMarketOffers(ids, region);
+  if (region === "us") return offers;
+  const unsold = ids.filter((id) => offers.has(id) && offers.get(id) == null);
+  for (const [id, offer] of await xboxMarketOffers(unsold, "us")) if (offer) offers.set(id, offer);
+  return offers;
+}
+
+async function xboxMarketOffers(ids: string[], region: PriceRegion): Promise<Map<string, Offer | null>> {
+  const offers = new Map<string, Offer | null>();
   for (let index = 0; index < ids.length; index += XBOX_BATCH) {
     const chunk = ids.slice(index, index + XBOX_BATCH);
     const url = `https://displaycatalog.mp.microsoft.com/v7.0/products?bigIds=${chunk.join(",")}&market=${XBOX_MARKET[region]}&languages=en-us&MS-CV=DGU1mcuYo0WMMp`;
