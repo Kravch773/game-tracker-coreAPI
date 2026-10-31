@@ -282,6 +282,59 @@ export type BacklogOrder = {
   rest: string[];
 };
 
+// Store prices: Ukrainian stores in hryvnias for the uk locale, US stores in dollars for en.
+export const PRICE_REGIONS = ["ua", "us"] as const;
+export type PriceRegion = (typeof PRICE_REGIONS)[number];
+export type PriceStore = "steam" | "playstation";
+
+export function priceRegionFor(locale: string): PriceRegion {
+  return locale === "en" ? "us" : "ua";
+}
+
+// Amounts are in minor units (kopecks, cents), as the stores report them.
+export type StorePrice = {
+  store: PriceStore;
+  currency: string;
+  amount: number;
+  base: number;
+  cut: number;
+  endsAt: string | null;
+  url: string;
+};
+
+export type GamePrices = {
+  region: PriceRegion;
+  stores: StorePrice[];
+  // The lowest price GameTracker itself has recorded in this region, across stores.
+  lowest: { store: PriceStore; currency: string; amount: number; seenOn: string } | null;
+  trackedSince: string | null;
+  steamAppId: string | null;
+};
+
+export type Deal = {
+  game: GameSummary;
+  price: StorePrice;
+  // At or below the lowest price recorded so far.
+  lowest: boolean;
+  // Went on sale after the user last opened the bell.
+  fresh: boolean;
+};
+
+export type DealSettings = {
+  alerts: boolean;
+  minCut: number;
+  wishlist: boolean;
+};
+
+export const DEAL_MIN_CUTS = [10, 25, 50, 75] as const;
+
+export type DealsResponse = {
+  region: PriceRegion;
+  deals: Deal[];
+  newCount: number;
+  settings: DealSettings;
+};
+
 export type SteamSyncResult = {
   steamId: string;
   matched: number;

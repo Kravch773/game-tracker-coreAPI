@@ -156,8 +156,50 @@ export const users = pgTable("users", {
   username: text("username").notNull().unique(),
   passwordHash: text("password_hash").notNull(),
   steamId: text("steam_id").unique(),
+  dealAlerts: boolean("deal_alerts").notNull().default(true),
+  dealMinCut: integer("deal_min_cut").notNull().default(10),
+  dealWishlist: boolean("deal_wishlist").notNull().default(true),
+  dealsSeenAt: timestamp("deals_seen_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+// The last price seen per game, store and region. amount is null when the store does not sell the game there.
+export const gamePrices = pgTable(
+  "game_prices",
+  {
+    gameId: uuid("game_id")
+      .notNull()
+      .references(() => games.id, { onDelete: "cascade" }),
+    store: text("store").notNull(),
+    region: text("region").notNull(),
+    currency: text("currency"),
+    amount: integer("amount"),
+    base: integer("base"),
+    cut: integer("cut").notNull().default(0),
+    endsAt: timestamp("ends_at", { withTimezone: true }),
+    saleSince: timestamp("sale_since", { withTimezone: true }),
+    url: text("url"),
+    checkedAt: timestamp("checked_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.gameId, table.store, table.region] })],
+);
+
+// The lowest price of each day, the base of "the lowest price we have seen".
+export const priceHistory = pgTable(
+  "price_history",
+  {
+    gameId: uuid("game_id")
+      .notNull()
+      .references(() => games.id, { onDelete: "cascade" }),
+    store: text("store").notNull(),
+    region: text("region").notNull(),
+    currency: text("currency").notNull(),
+    amount: integer("amount").notNull(),
+    base: integer("base").notNull(),
+    seenOn: date("seen_on").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.gameId, table.store, table.region, table.seenOn] })],
+);
 
 export type EmailCodePurpose = "signup" | "reset";
 export type SignupPayload = { username: string; passwordHash: string };

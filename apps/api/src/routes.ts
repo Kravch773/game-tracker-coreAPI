@@ -53,6 +53,7 @@ import { importMyGamesList, parseImportRows } from "./library/import.js";
 import { SteamError, listSteamWishlistMissing, syncSteamLibrary, syncSteamWishlist } from "./steam/service.js";
 import { TrailersUnavailableError, trailersForSlug } from "./rawg/trailers.js";
 import { seriesForUsername } from "./library/series.js";
+import { PriceInputError, dealSettingsFor, dealsForUser, markDealsSeen, parseRegion, pricesForGame, saveDealSettings } from "./prices/service.js";
 import { activityFeed, followedRatings, listFollows, setFollow } from "./social/service.js";
 
 const searchQuery = z.object({
@@ -493,6 +494,45 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     const entry = await entryForSlug(user.id, parsed.data.slug);
     if (!entry) return reply.code(404).send({ error: t("game.notFound") });
     return entry;
+  });
+
+  app.get("/games/:slug/prices", async (request, reply) => {
+    const parsed = slugParams.safeParse(request.params);
+    if (!parsed.success) return reply.code(400).send({ error: t("api.badSlug") });
+    const region = parseRegion((request.query as { region?: unknown } | undefined)?.region);
+    const prices = await pricesForGame(parsed.data.slug, region);
+    if (!prices) return reply.code(404).send({ error: t("game.notFound") });
+    return prices;
+  });
+
+  app.get("/me/deals", async (request, reply) => {
+    const user = await userFromRequest(request);
+    if (!user) return reply.code(401).send({ error: t("auth.signInRequired") });
+    return dealsForUser(user.id, parseRegion((request.query as { region?: unknown } | undefined)?.region));
+  });
+
+  app.post("/me/deals/seen", async (request, reply) => {
+    const user = await userFromRequest(request);
+    if (!user) return reply.code(401).send({ error: t("auth.signInRequired") });
+    await markDealsSeen(user.id);
+    return reply.code(204).send();
+  });
+
+  app.get("/me/deal-settings", async (request, reply) => {
+    const user = await userFromRequest(request);
+    if (!user) return reply.code(401).send({ error: t("auth.signInRequired") });
+    return dealSettingsFor(user.id);
+  });
+
+  app.put("/me/deal-settings", async (request, reply) => {
+    const user = await userFromRequest(request);
+    if (!user) return reply.code(401).send({ error: t("auth.signInRequired") });
+    try {
+      return await saveDealSettings(user.id, request.body);
+    } catch (error) {
+      if (error instanceof PriceInputError) return reply.code(400).send({ error: error.message });
+      throw error;
+    }
   });
 
   app.get("/games/:slug/following", async (request, reply) => {

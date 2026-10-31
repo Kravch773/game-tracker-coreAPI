@@ -65,6 +65,28 @@ export async function igdbIdsForSteamApps(appIds: string[]): Promise<number[]> {
   return [...ids];
 }
 
+// Console store pages (PlayStation, Microsoft) for many games at once, grouped by IGDB game id.
+export async function storeExternalsFor(igdbIds: number[]): Promise<Map<number, NonNullable<IgdbGameDetail["external_games"]>>> {
+  const found = new Map<number, NonNullable<IgdbGameDetail["external_games"]>>();
+  for (let index = 0; index < igdbIds.length; index += 200) {
+    const chunk = igdbIds.slice(index, index + 200).filter((id) => Number.isInteger(id)).join(",");
+    if (!chunk) continue;
+    const payload = await postIgdb(
+      EXTERNAL_URL,
+      `fields game,external_game_source,url,uid; where game = (${chunk}) & external_game_source = (11,36); limit 500;`,
+      "IGDB store links",
+    );
+    if (!Array.isArray(payload)) continue;
+    for (const row of payload as { game?: unknown; external_game_source?: number; url?: string; uid?: string }[]) {
+      if (typeof row?.game !== "number") continue;
+      const list = found.get(row.game) ?? [];
+      list.push({ external_game_source: row.external_game_source, url: row.url, uid: row.uid });
+      found.set(row.game, list);
+    }
+  }
+  return found;
+}
+
 export async function developerCompanies(
   igdbIds: number[],
   role: "developer" | "publisher" = "developer",
