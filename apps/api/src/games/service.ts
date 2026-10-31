@@ -12,7 +12,7 @@ import { gameDetails, gameLinks, games, searchCache, type GameDetailRow, type Ga
 import { igdbConfigured } from "../env.js";
 import { fetchIgdbGame, fetchIgdbGameBySlug, fetchTimeToBeat, matchCompanies, matchFranchises, queryIgdbGames, searchAlternativeNames, searchIgdb } from "../igdb/client.js";
 import { communityForGame } from "./community.js";
-import { STORE_LINK_KINDS, mapIgdbDetails, mapIgdbGame, mapStoreLinks, type MappedGame, type MappedLink } from "../igdb/map.js";
+import { CONSOLE_LINK_KINDS, STORE_LINK_KINDS, mapIgdbDetails, mapIgdbGame, mapStoreLinks, type MappedGame, type MappedLink } from "../igdb/map.js";
 import { scheduleMetacriticEnrich } from "../rawg/enrich.js";
 import {
   developedByUkrainianStudio,
@@ -192,7 +192,13 @@ async function saveStoreLinks(gameId: string, links: MappedLink[]): Promise<void
   await db.transaction(async (tx) => {
     await tx
       .delete(gameLinks)
-      .where(and(eq(gameLinks.gameId, gameId), eq(gameLinks.source, "igdb"), inArray(gameLinks.kind, STORE_LINK_KINDS)));
+      .where(
+        and(
+          eq(gameLinks.gameId, gameId),
+          eq(gameLinks.source, "igdb"),
+          inArray(gameLinks.kind, [...new Set([...CONSOLE_LINK_KINDS, ...links.map((link) => link.kind)])]),
+        ),
+      );
     if (links.length > 0) {
       await tx
         .insert(gameLinks)

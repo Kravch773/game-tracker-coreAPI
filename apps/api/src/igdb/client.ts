@@ -99,7 +99,7 @@ export async function storeExternalsFor(igdbIds: number[]): Promise<Map<number, 
     if (!chunk) continue;
     const payload = await postIgdb(
       EXTERNAL_URL,
-      `fields game,external_game_source,url,uid; where game = (${chunk}) & external_game_source = (11,36); limit 500;`,
+      `fields game,external_game_source,url,uid; where game = (${chunk}) & external_game_source = (5,11,36); limit 500;`,
       "IGDB store links",
     );
     if (!Array.isArray(payload)) continue;

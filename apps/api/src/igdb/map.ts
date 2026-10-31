@@ -10,13 +10,16 @@ const WEBSITE_KIND: Record<number, GameLinkKind> = {
   17: "gog",
 };
 
-// IGDB external game sources whose pages are console stores; only links to the store itself are kept.
+// IGDB external game sources whose ids the stores' prices are looked up by; only links to the store itself are kept.
 const STORE_SOURCE: Record<number, { kind: GameLinkKind; host: RegExp }> = {
   36: { kind: "playstation", host: /^store\.playstation\.com$/ },
   11: { kind: "xbox", host: /^(www\.)?xbox\.com$/ },
+  5: { kind: "gog", host: /^(www\.)?gog\.com$/ },
 };
 
-export const STORE_LINK_KINDS: GameLinkKind[] = ["playstation", "xbox"];
+export const STORE_LINK_KINDS: GameLinkKind[] = ["playstation", "xbox", "gog"];
+// GOG also comes as a plain website link, which stays when IGDB lists no GOG product for the game.
+export const CONSOLE_LINK_KINDS: GameLinkKind[] = ["playstation", "xbox"];
 
 export type MappedLink = {
   kind: GameLinkKind;
@@ -120,13 +123,20 @@ export function mapStoreLinks(game: IgdbGameDetail | null): MappedLink[] {
   for (const item of game?.external_games ?? []) {
     const store = item.external_game_source == null ? undefined : STORE_SOURCE[item.external_game_source];
     const url = item.url?.trim();
-    if (!store || !url || links.has(store.kind)) continue;
+    const uid = item.uid?.trim() || null;
+    const known = store ? links.get(store.kind) : undefined;
+    // GOG lists a game under several product ids (old and new builds, the game in a pack); each is tried for a price.
+    if (known && store?.kind === "gog" && uid && known.externalId && !known.externalId.split(",").includes(uid)) {
+      known.externalId = `${known.externalId},${uid}`;
+      continue;
+    }
+    if (!store || !url || known) continue;
     try {
       const parsed = new URL(url);
       if (parsed.protocol !== "https:" || !store.host.test(parsed.hostname)) continue;
-      // Without the locale segment both stores open in the visitor's own region.
-      parsed.pathname = parsed.pathname.replace(/^\/[a-z]{2}-[a-z]{2}(?=\/)/i, "");
-      links.set(store.kind, { kind: store.kind, url: parsed.href, externalId: item.uid?.trim() || null, source: "igdb" });
+      // Without the locale segment the stores open in the visitor's own region and language.
+      parsed.pathname = parsed.pathname.replace(/^\/[a-z]{2}(?:-[a-z]{2})?(?=\/)/i, "");
+      links.set(store.kind, { kind: store.kind, url: parsed.href, externalId: uid, source: "igdb" });
     } catch {
       continue;
     }

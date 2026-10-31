@@ -1,10 +1,8 @@
-import { PRICE_REGIONS, type PriceRegion } from "@gametracker/shared";
+import { PRICE_REGIONS, PRICE_STORES, type PriceRegion } from "@gametracker/shared";
 import { eq, gt } from "drizzle-orm";
 import { db } from "../db/client.js";
 import { listEntries, priceSweeps, priceWatch, steamWishes } from "../db/schema.js";
-import { STEAM_BATCH } from "./fetch.js";
-import { playstationGate, steamGate } from "./gate.js";
-import { checkedTimes, fillPlaystationLinks, refreshPlaystation, refreshSteam, targetsFor, type Target } from "./service.js";
+import { batchSize, checkedTimes, fillStoreLinks, jobsFor, sweepJobs, targetsFor, type Target } from "./service.js";
 
 // Steam turns its daily and weekly sales on at 10:00 Pacific: 17:00 UTC in summer, 18:00 in winter.
 const SWEEP_AT_MINUTE = 18 * 60 + 15;
@@ -60,7 +58,7 @@ async function sweep(startedAt: Date): Promise<number> {
 
   const targets: Target[] = [];
   for (let index = 0; index < gameIds.length; index += 500) targets.push(...(await targetsFor(gameIds.slice(index, index + 500))));
-  for (let index = 0; index < targets.length; index += 200) await fillPlaystationLinks(targets.slice(index, index + 200));
+  for (let index = 0; index < targets.length; index += 200) await fillStoreLinks(targets.slice(index, index + 200));
 
   for (const region of PRICE_REGIONS) await sweepRegion(targets, region, startedAt.getTime());
   return targets.length;
@@ -70,23 +68,19 @@ async function sweep(startedAt: Date): Promise<number> {
 // knows what is left.
 async function sweepRegion(targets: Target[], region: PriceRegion, startedAt: number): Promise<void> {
   const checked = await checkedTimes(targets.map((target) => target.gameId), region);
-  const pending = (target: Target, store: "steam" | "playstation") => (checked.get(`${target.gameId}|${store}`) ?? 0) < startedAt;
+  const jobs = jobsFor(targets, region, (gameId, store) => (checked.get(`${gameId}|${store}`) ?? 0) < startedAt);
 
-  const steam = targets.filter((target) => target.steamAppId && pending(target, "steam"));
-  for (let index = 0; index < steam.length; index += STEAM_BATCH) {
-    const chunk = steam.slice(index, index + STEAM_BATCH);
-    for (let attempt = 0; attempt < TRIES; attempt += 1) {
-      await steamGate.sweep();
-      if (await refreshSteam(chunk, region, steamGate)) break;
-    }
-  }
-
-  const playstation = targets.filter((target) => target.psConceptId && pending(target, "playstation"));
-  for (const target of playstation) {
-    const job = { store: "playstation" as const, gameId: target.gameId, externalId: target.psConceptId as string, region };
-    for (let attempt = 0; attempt < TRIES; attempt += 1) {
-      await playstationGate.sweep();
-      if (await refreshPlaystation(job, playstationGate)) break;
-    }
-  }
+  // The stores keep their own pace, so they are swept side by side.
+  await Promise.all(
+    PRICE_STORES.map(async (store) => {
+      const mine = jobs.filter((job) => job.store === store);
+      const size = batchSize(store);
+      for (let index = 0; index < mine.length; index += size) {
+        const chunk = mine.slice(index, index + size);
+        for (let attempt = 0; attempt < TRIES; attempt += 1) {
+          if (await sweepJobs(store, chunk, region)) break;
+        }
+      }
+    }),
+  );
 }

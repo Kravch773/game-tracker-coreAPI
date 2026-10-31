@@ -60,6 +60,8 @@ export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// Steam is asked about 50 games at a time; the PlayStation Store one page at a time.
+// Steam, GOG and the Xbox Store are asked about many games at a time; the PlayStation Store one page at a time.
 export const steamGate = new StoreGate(2_000, 250);
 export const playstationGate = new StoreGate(4_000, 500);
+export const xboxGate = new StoreGate(2_000, 250);
+export const gogGate = new StoreGate(2_000, 250);

@@ -159,3 +159,105 @@ function jsonObjectAt(text: string, start: number): string | null {
   }
   return null;
 }
+
+export const XBOX_BATCH = 20;
+
+type XboxAvailability = {
+  Actions?: string[];
+  RemediationRequired?: boolean;
+  Conditions?: { EndDate?: string };
+  OrderManagementData?: { Price?: { CurrencyCode?: string; ListPrice?: number; MSRP?: number } };
+};
+type XboxProduct = { ProductId?: string; DisplaySkuAvailabilities?: { Availabilities?: XboxAvailability[] }[] };
+
+// The Microsoft Store catalog answers for many products at once. A product's offer is its cheapest purchase that
+// needs no subscription (Game Pass discounts come as availabilities to remediate first). The Xbox Store does not
+// sell in Ukraine: its Ukrainian catalog lists the games at no price, so only US prices are asked for.
+export async function xboxOffers(bigIds: string[], region: PriceRegion): Promise<Map<string, Offer | null>> {
+  const offers = new Map<string, Offer | null>();
+  const ids = bigIds.filter((id) => /^[0-9A-Z]{12}$/.test(id));
+  if (region !== "us") return offers;
+  for (let index = 0; index < ids.length; index += XBOX_BATCH) {
+    const chunk = ids.slice(index, index + XBOX_BATCH);
+    const url = `https://displaycatalog.mp.microsoft.com/v7.0/products?bigIds=${chunk.join(",")}&market=US&languages=en-us&MS-CV=DGU1mcuYo0WMMp`;
+    const response = await fetch(url, { signal: AbortSignal.timeout(10000) });
+    if (response.status === 429 || response.status === 403) throw new StoreLimitError(response.status, response.headers.get("retry-after"));
+    if (!response.ok) throw new Error(`Xbox Store prices failed with ${response.status}`);
+    const payload = (await response.json()) as { Products?: XboxProduct[] } | null;
+    for (const product of payload?.Products ?? []) {
+      if (!product.ProductId) continue;
+      let best: Offer | null = null;
+      for (const sku of product.DisplaySkuAvailabilities ?? []) {
+        for (const availability of sku.Availabilities ?? []) {
+          const price = availability.OrderManagementData?.Price;
+          if (!availability.Actions?.includes("Purchase") || availability.RemediationRequired || !price?.CurrencyCode) continue;
+          if (typeof price.ListPrice !== "number" || price.ListPrice <= 0) continue;
+          const amount = Math.round(price.ListPrice * 100);
+          const base = Math.max(amount, Math.round((price.MSRP ?? 0) * 100));
+          if (best && best.amount <= amount) continue;
+          const end = availability.Conditions?.EndDate ? new Date(availability.Conditions.EndDate) : null;
+          best = {
+            currency: price.CurrencyCode,
+            amount,
+            base,
+            cut: base > amount ? Math.round((1 - amount / base) * 100) : 0,
+            // Full-price availabilities run until a far-off date (or year 9998), which says nothing about a sale.
+            endsAt: base > amount && end && end.getUTCFullYear() < 9000 ? end : null,
+          };
+        }
+      }
+      offers.set(product.ProductId, best);
+    }
+  }
+  return offers;
+}
+
+const GOG_COUNTRY: Record<PriceRegion, string> = { ua: "UA", us: "US" };
+export const GOG_BATCH = 25;
+
+type GogPriceItem = {
+  _embedded?: { product?: { id?: number }; prices?: { currency?: { code?: string }; basePrice?: string; finalPrice?: string }[] };
+};
+
+// GOG prices each product per country (Ukraine in dollars, lower than the US) and answers for many products at
+// once, leaving out those not for sale. A game may sit under several product ids, comma-separated in its link
+// (an old build, the game in a pack), and its offer is the first of them GOG prices.
+export async function gogOffers(gameIds: string[], region: PriceRegion): Promise<Map<string, Offer | null>> {
+  const offers = new Map<string, Offer | null>();
+  for (let index = 0; index < gameIds.length; index += GOG_BATCH) {
+    const chunk = gameIds.slice(index, index + GOG_BATCH);
+    const products = [...new Set(chunk.flatMap((ids) => ids.split(",")).filter((id) => /^\d+$/.test(id)))];
+    if (products.length === 0) continue;
+    const response = await fetch(`https://api.gog.com/products/prices?ids=${products.join(",")}&countryCode=${GOG_COUNTRY[region]}`, {
+      headers: { Accept: "application/json" },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (response.status === 429 || response.status === 403) throw new StoreLimitError(response.status, response.headers.get("retry-after"));
+    if (!response.ok) throw new Error(`GOG prices failed with ${response.status}`);
+    const payload = (await response.json()) as { _embedded?: { items?: GogPriceItem[] } } | null;
+    const priced = new Map<string, Offer | null>();
+    for (const item of payload?._embedded?.items ?? []) {
+      const id = item._embedded?.product?.id;
+      const price = item._embedded?.prices?.[0];
+      const amount = minorUnits(price?.finalPrice);
+      const base = minorUnits(price?.basePrice);
+      const currency = price?.currency?.code;
+      if (id == null || amount == null || base == null || !currency) continue;
+      priced.set(
+        String(id),
+        base === 0 ? null : { currency, amount, base: Math.max(base, amount), cut: base > amount ? Math.round((1 - amount / base) * 100) : 0, endsAt: null },
+      );
+    }
+    for (const ids of chunk) {
+      const id = ids.split(",").find((product) => priced.has(product));
+      offers.set(ids, id ? (priced.get(id) ?? null) : null);
+    }
+  }
+  return offers;
+}
+
+// GOG writes prices as "2999 USD".
+function minorUnits(value: string | undefined): number | null {
+  const match = /^(\d+)\s/.exec(value ?? "");
+  return match ? Number(match[1]) : null;
+}

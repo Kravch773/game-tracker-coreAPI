@@ -1,6 +1,7 @@
 import {
   DEAL_MIN_CUTS,
   PRICE_REGIONS,
+  PRICE_STORES,
   t,
   type Deal,
   type DealSettings,
@@ -17,8 +18,8 @@ import { igdbConfigured } from "../env.js";
 import { storeExternalsFor } from "../igdb/client.js";
 import { mapStoreLinks } from "../igdb/map.js";
 import { toSummary } from "../games/present.js";
-import { STEAM_BATCH, playstationOffer, psStoreUrl, steamOffers, steamStoreUrl, type Offer } from "./fetch.js";
-import { StoreBusyError, StoreLimitError, playstationGate, sleep, steamGate, type StoreGate } from "./gate.js";
+import { GOG_BATCH, STEAM_BATCH, XBOX_BATCH, gogOffers, playstationOffer, psStoreUrl, steamOffers, steamStoreUrl, xboxOffers, type Offer } from "./fetch.js";
+import { StoreBusyError, StoreLimitError, gogGate, playstationGate, sleep, steamGate, xboxGate, type StoreGate } from "./gate.js";
 
 // The daily sweep keeps prices fresh; a visitor's request only refreshes a price the sweep has not touched for a day.
 const FRESH_MS = 24 * 60 * 60 * 1000;
@@ -27,13 +28,13 @@ const VISITOR_WAIT_MS = 6_000;
 // How long a visitor's request may wait for its turn at a store before it settles for the stored price.
 const TURN_WAIT_MS = 1_500;
 // PlayStation pages are fetched one by one; a request fetches a few and leaves the rest to the background queue.
-const PS_INLINE = 3;
-const PS_LINK_RECHECK_MS = 7 * 24 * 60 * 60 * 1000;
+const PAGES_INLINE = 3;
+const STORE_LINK_RECHECK_MS = 7 * 24 * 60 * 60 * 1000;
 const LOWEST_AFTER_MS = 14 * 24 * 60 * 60 * 1000;
 
 export class PriceInputError extends Error {}
 
-export type Target = { gameId: string; igdbId: number; steamAppId: string | null; psConceptId: string | null };
+export type Target = { gameId: string; igdbId: number; stores: Partial<Record<PriceStore, { id: string; url: string }>> };
 type PriceRow = typeof gamePrices.$inferSelect;
 
 export function parseRegion(value: unknown): PriceRegion {
@@ -49,7 +50,7 @@ export async function pricesForGame(slug: string, region: PriceRegion): Promise<
     .insert(priceWatch)
     .values({ gameId: game.id, viewedAt: new Date() })
     .onConflictDoUpdate({ target: priceWatch.gameId, set: { viewedAt: new Date() } });
-  await withinVisitorWait(fillPlaystationLinks(targets).then(() => refresh(targets, region)));
+  await withinVisitorWait(fillStoreLinks(targets).then(() => refresh(targets, region)));
   const target = targets[0];
 
   const prices = await db
@@ -60,7 +61,7 @@ export async function pricesForGame(slug: string, region: PriceRegion): Promise<
     const price = toStorePrice(row);
     return price ? [price] : [];
   });
-  stores.sort((a, b) => (a.store === "steam" ? -1 : 1) - (b.store === "steam" ? -1 : 1));
+  stores.sort((a, b) => PRICE_STORES.indexOf(a.store) - PRICE_STORES.indexOf(b.store));
 
   const history = await db
     .select()
@@ -79,7 +80,7 @@ export async function pricesForGame(slug: string, region: PriceRegion): Promise<
       ? { store: lowestRow.store as PriceStore, currency: lowestRow.currency, amount: lowestRow.amount, seenOn: lowestRow.seenOn }
       : null,
     trackedSince: since,
-    steamAppId: target?.steamAppId ?? null,
+    steamAppId: target?.stores.steam?.id ?? null,
   };
 }
 
@@ -98,7 +99,7 @@ export async function dealsForUser(userId: string, region: PriceRegion): Promise
   if (gameIds.length === 0) return { region, deals: [], newCount: 0, settings };
 
   const targets = await targetsFor(gameIds);
-  await withinVisitorWait(fillPlaystationLinks(targets).then(() => refresh(targets, region)));
+  await withinVisitorWait(fillStoreLinks(targets).then(() => refresh(targets, region)));
 
   const prices = await db
     .select()
@@ -202,41 +203,85 @@ export async function targetsFor(gameIds: string[]): Promise<Target[]> {
   const [rows, links] = await Promise.all([
     db.select({ id: games.id, igdbId: games.igdbId }).from(games).where(inArray(games.id, gameIds)),
     db
-      .select({ gameId: gameLinks.gameId, kind: gameLinks.kind, externalId: gameLinks.externalId })
+      .select({ gameId: gameLinks.gameId, kind: gameLinks.kind, externalId: gameLinks.externalId, url: gameLinks.url })
       .from(gameLinks)
-      .where(and(inArray(gameLinks.gameId, gameIds), inArray(gameLinks.kind, ["steam", "playstation"]))),
+      .where(and(inArray(gameLinks.gameId, gameIds), inArray(gameLinks.kind, [...PRICE_STORES]))),
   ]);
-  return rows.map((row) => ({
-    gameId: row.id,
-    igdbId: row.igdbId,
-    steamAppId: links.find((link) => link.gameId === row.id && link.kind === "steam")?.externalId ?? null,
-    psConceptId: links.find((link) => link.gameId === row.id && link.kind === "playstation")?.externalId ?? null,
-  }));
+  return rows.map((row) => {
+    const stores: Target["stores"] = {};
+    for (const link of links) {
+      if (link.gameId === row.id && link.externalId) stores[link.kind as PriceStore] = { id: link.externalId, url: link.url };
+    }
+    return { gameId: row.id, igdbId: row.igdbId, stores };
+  });
 }
 
-// Store links normally arrive with a game's details; games nobody has opened yet get theirs from IGDB in one batch.
-const psLinkChecked = new Map<string, number>();
+// Store ids normally arrive with a game's details; games nobody has opened yet get theirs from IGDB in one batch.
+const LOOKED_UP: PriceStore[] = ["playstation", "xbox", "gog"];
+const storeLinksChecked = new Map<string, number>();
 
-export async function fillPlaystationLinks(targets: Target[]): Promise<void> {
+export async function fillStoreLinks(targets: Target[]): Promise<void> {
   if (!igdbConfigured()) return;
   const now = Date.now();
-  const missing = targets.filter((target) => !target.psConceptId && now - (psLinkChecked.get(target.gameId) ?? 0) > PS_LINK_RECHECK_MS);
+  const missing = targets.filter(
+    (target) =>
+      LOOKED_UP.some((store) => !target.stores[store]) && now - (storeLinksChecked.get(target.gameId) ?? 0) > STORE_LINK_RECHECK_MS,
+  );
   if (missing.length === 0) return;
-  for (const target of missing) psLinkChecked.set(target.gameId, now);
+  for (const target of missing) storeLinksChecked.set(target.gameId, now);
   try {
     const found = await storeExternalsFor(missing.map((target) => target.igdbId));
     for (const target of missing) {
-      const links = mapStoreLinks({ external_games: found.get(target.igdbId) ?? [] });
+      const links = mapStoreLinks({ external_games: found.get(target.igdbId) ?? [] }).filter(
+        (link) => link.externalId && !target.stores[link.kind as PriceStore],
+      );
       if (links.length === 0) continue;
+      // A GOG website link without a product id takes the id; links set by hand stay as they are.
       await db
         .insert(gameLinks)
         .values(links.map((link) => ({ ...link, gameId: target.gameId })))
-        .onConflictDoNothing({ target: [gameLinks.gameId, gameLinks.kind] });
-      target.psConceptId = links.find((link) => link.kind === "playstation")?.externalId ?? target.psConceptId;
+        .onConflictDoUpdate({
+          target: [gameLinks.gameId, gameLinks.kind],
+          set: { url: sql`excluded.url`, externalId: sql`excluded.external_id` },
+          setWhere: sql`${gameLinks.externalId} IS NULL AND ${gameLinks.source} = 'igdb'`,
+        });
+      for (const link of links) target.stores[link.kind as PriceStore] = { id: link.externalId as string, url: link.url };
     }
   } catch (error) {
-    console.error("PlayStation link lookup failed", error);
+    console.error("Store link lookup failed", error);
   }
+}
+
+// Steam, GOG and the Xbox Store answer for many games in one request; the PlayStation Store one page at a time.
+type BatchStore = "steam" | "gog" | "xbox";
+const BATCH: Record<BatchStore, number> = { steam: STEAM_BATCH, gog: GOG_BATCH, xbox: XBOX_BATCH };
+const GATES: Record<PriceStore, StoreGate> = { steam: steamGate, xbox: xboxGate, playstation: playstationGate, gog: gogGate };
+const STORE_NAMES: Record<PriceStore, string> = { steam: "Steam", xbox: "Xbox Store", playstation: "PlayStation Store", gog: "GOG" };
+
+function isBatchStore(store: PriceStore): store is BatchStore {
+  return store !== "playstation";
+}
+
+export function batchSize(store: PriceStore): number {
+  return isBatchStore(store) ? BATCH[store] : 1;
+}
+
+// The Xbox Store does not sell in Ukraine.
+function sellsIn(store: PriceStore, region: PriceRegion): boolean {
+  return store !== "xbox" || region === "us";
+}
+
+export type QueueJob = { store: PriceStore; gameId: string; externalId: string; url: string; region: PriceRegion };
+
+export function jobsFor(targets: Target[], region: PriceRegion, wanted: (gameId: string, store: PriceStore) => boolean): QueueJob[] {
+  return targets.flatMap((target) =>
+    PRICE_STORES.flatMap((store) => {
+      const link = target.stores[store];
+      return link && sellsIn(store, region) && wanted(target.gameId, store)
+        ? [{ store, gameId: target.gameId, externalId: link.id, url: link.url, region }]
+        : [];
+    }),
+  );
 }
 
 // A visitor's refresh: stale prices are fetched ahead of the sweep, but never kept waiting. A store that is parked
@@ -244,22 +289,20 @@ export async function fillPlaystationLinks(targets: Target[]): Promise<void> {
 async function refresh(targets: Target[], region: PriceRegion): Promise<void> {
   if (targets.length === 0) return;
   const checked = await checkedTimes(targets.map((target) => target.gameId), region);
-  const stale = (gameId: string, store: PriceStore) => Date.now() - (checked.get(`${gameId}|${store}`) ?? 0) > FRESH_MS;
+  const jobs = jobsFor(targets, region, (gameId, store) => Date.now() - (checked.get(`${gameId}|${store}`) ?? 0) > FRESH_MS);
 
-  const steam = targets.filter((target) => target.steamAppId && stale(target.gameId, "steam"));
-  for (let index = 0; index < steam.length; index += STEAM_BATCH) {
-    const chunk = steam.slice(index, index + STEAM_BATCH);
-    if (!(await urgentTurn(steamGate)) || !(await refreshSteam(chunk, region, steamGate))) {
-      for (const target of chunk) queueRefresh({ store: "steam", gameId: target.gameId, externalId: target.steamAppId as string, region });
-    }
-  }
-
-  const playstation = targets.filter((target) => target.psConceptId && stale(target.gameId, "playstation"));
-  for (const [index, target] of playstation.entries()) {
-    const job: QueueJob = { store: "playstation", gameId: target.gameId, externalId: target.psConceptId as string, region };
-    const done = index < PS_INLINE && (await urgentTurn(playstationGate)) && (await refreshPlaystation(job, playstationGate));
-    if (!done) queueRefresh(job);
-  }
+  await Promise.all(
+    PRICE_STORES.map(async (store) => {
+      const mine = jobs.filter((job) => job.store === store);
+      const size = batchSize(store);
+      for (let index = 0; index < mine.length; index += size) {
+        const chunk = mine.slice(index, index + size);
+        const inline = isBatchStore(store) || index < PAGES_INLINE;
+        const done = inline && (await urgentTurn(GATES[store])) && (await runJobs(store, chunk, region));
+        if (!done) chunk.forEach(queueRefresh);
+      }
+    }),
+  );
 }
 
 async function urgentTurn(gate: StoreGate): Promise<boolean> {
@@ -288,73 +331,60 @@ export async function checkedTimes(gameIds: string[], region: PriceRegion): Prom
   return checked;
 }
 
-// One Steam request for up to STEAM_BATCH games. Returns false when the store asked to slow down.
-export async function refreshSteam(targets: Target[], region: PriceRegion, gate: StoreGate): Promise<boolean> {
+// One turn at a store: a batch of games at Steam, GOG or the Xbox Store, one game's page at PlayStation.
+// Returns false when the store asked to slow down, so the jobs can be tried again later.
+export async function runJobs(store: PriceStore, jobs: QueueJob[], region: PriceRegion): Promise<boolean> {
+  if (jobs.length === 0) return true;
   try {
-    const offers = await steamOffers(targets.map((target) => target.steamAppId as string), region);
-    for (const target of targets) {
-      const appId = target.steamAppId as string;
-      if (offers.has(appId)) await save(target.gameId, "steam", region, offers.get(appId) ?? null, steamStoreUrl(appId));
+    if (isBatchStore(store)) {
+      const ids = jobs.map((job) => job.externalId);
+      const offers = await (store === "steam" ? steamOffers : store === "gog" ? gogOffers : xboxOffers)(ids, region);
+      for (const job of jobs) {
+        if (!offers.has(job.externalId)) continue;
+        await save(job.gameId, store, region, offers.get(job.externalId) ?? null, store === "steam" ? steamStoreUrl(job.externalId) : job.url);
+      }
+      return true;
     }
+    const job = jobs[0];
+    await save(job.gameId, store, region, await playstationOffer(job.externalId, region), psStoreUrl(job.externalId, region));
     return true;
   } catch (error) {
     if (error instanceof StoreLimitError) {
-      gate.backOff(error.retryAfter);
-      console.warn(`Steam asked to slow down (${error.status})`);
+      GATES[store].backOff(error.retryAfter);
+      console.warn(`${STORE_NAMES[store]} asked to slow down (${error.status})`);
       return false;
     }
-    console.error("Steam prices failed", error);
+    console.error(`${STORE_NAMES[store]} prices for ${jobs.map((job) => job.externalId).join(" ")} failed`, error);
     return true;
   }
 }
 
-export async function refreshPlaystation(job: QueueJob, gate: StoreGate): Promise<boolean> {
-  try {
-    await save(job.gameId, "playstation", job.region, await playstationOffer(job.externalId, job.region), psStoreUrl(job.externalId, job.region));
-    return true;
-  } catch (error) {
-    if (error instanceof StoreLimitError) {
-      gate.backOff(error.retryAfter);
-      console.warn(`PlayStation Store asked to slow down (${error.status})`);
-      return false;
-    }
-    console.error(`PlayStation price for ${job.externalId} failed`, error);
-    return true;
-  }
+// The sweep's turn at a store: it waits for the store's slow pace first.
+export async function sweepJobs(store: PriceStore, jobs: QueueJob[], region: PriceRegion): Promise<boolean> {
+  await GATES[store].sweep();
+  return runJobs(store, jobs, region);
 }
 
-export type QueueJob = { store: PriceStore; gameId: string; externalId: string; region: PriceRegion };
-
-// What a visitor's request could not fetch in time, done at the sweep's pace.
+// What a visitor's request could not fetch in time, done at the sweep's pace; each store drains on its own.
 const queue = new Map<string, QueueJob>();
-let draining = false;
+const draining = new Set<PriceStore>();
 
 function queueRefresh(job: QueueJob): void {
   queue.set(`${job.store}|${job.gameId}|${job.region}`, job);
-  if (draining) return;
-  draining = true;
+  const store = job.store;
+  if (draining.has(store)) return;
+  draining.add(store);
   void (async () => {
     try {
-      while (queue.size > 0) {
-        const steam = [...queue.values()].filter((item) => item.store === "steam").slice(0, STEAM_BATCH);
-        if (steam.length > 0) {
-          const region = steam[0].region;
-          const batch = steam.filter((item) => item.region === region);
-          await steamGate.sweep();
-          const done = await refreshSteam(
-            batch.map((item) => ({ gameId: item.gameId, igdbId: 0, steamAppId: item.externalId, psConceptId: null })),
-            region,
-            steamGate,
-          );
-          if (done) for (const item of batch) queue.delete(`steam|${item.gameId}|${region}`);
-          continue;
-        }
-        const [key, job] = [...queue.entries()][0];
-        await playstationGate.sweep();
-        if (await refreshPlaystation(job, playstationGate)) queue.delete(key);
+      for (;;) {
+        const waiting = [...queue.values()].filter((item) => item.store === store);
+        if (waiting.length === 0) break;
+        const region = waiting[0].region;
+        const batch = waiting.filter((item) => item.region === region).slice(0, batchSize(store));
+        if (await sweepJobs(store, batch, region)) for (const item of batch) queue.delete(`${store}|${item.gameId}|${region}`);
       }
     } finally {
-      draining = false;
+      draining.delete(store);
     }
   })();
 }
