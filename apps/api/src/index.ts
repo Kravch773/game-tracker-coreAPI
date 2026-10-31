@@ -7,6 +7,7 @@ import { sql } from "./db/client.js";
 import { migrate } from "./db/migrate.js";
 import { env } from "./env.js";
 import { startKeepAwake } from "./keep-awake.js";
+import { startPriceSweeps } from "./prices/sweep.js";
 import { registerRoutes } from "./routes.js";
 import { startCuratorRefresh } from "./steam/curators.js";
 
@@ -33,6 +34,7 @@ const address = await app.listen({ port: env.port, host: "0.0.0.0" });
 app.log.info(`API listening on ${address}`);
 startCuratorRefresh();
 startKeepAwake(app.log);
+if (process.env.RENDER === "true") startPriceSweeps(app.log);
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.on(signal, () => {

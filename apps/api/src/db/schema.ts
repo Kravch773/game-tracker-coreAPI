@@ -184,6 +184,20 @@ export const gamePrices = pgTable(
   (table) => [primaryKey({ columns: [table.gameId, table.store, table.region] })],
 );
 
+export const priceSweeps = pgTable("price_sweeps", {
+  day: date("day").primaryKey(),
+  startedAt: timestamp("started_at", { withTimezone: true }).notNull(),
+  finishedAt: timestamp("finished_at", { withTimezone: true }),
+  games: integer("games"),
+});
+
+export const priceWatch = pgTable("price_watch", {
+  gameId: uuid("game_id")
+    .primaryKey()
+    .references(() => games.id, { onDelete: "cascade" }),
+  viewedAt: timestamp("viewed_at", { withTimezone: true }).notNull(),
+});
+
 // The lowest price of each day, the base of "the lowest price we have seen".
 export const priceHistory = pgTable(
   "price_history",
