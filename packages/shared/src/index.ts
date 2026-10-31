@@ -220,6 +220,7 @@ export type ActivityResponse = {
 
 export type { CatalogGenreId, CatalogPlatformId, SearchGenreId } from "./catalog";
 export { CATALOG_GENRES, CATALOG_PLATFORMS, SEARCH_GENRES, catalogGenre, catalogPlatform } from "./catalog";
+export { BRAND_PATHS, type BrandName } from "./brands";
 
 export type AuthUser = {
   id: string;
